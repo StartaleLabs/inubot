@@ -1,0 +1,37 @@
+[workspace]
+members = ["inu", "redis"]
+resolver = "2"
+
+
+[workspace.dependencies]
+serde = "1.0.202"
+serde_json = "1.0.117"
+tokio = { version = "1.37.0", features = ["full"] }
+eyre = "0.6.12"
+rand = "0.8.5"
+alloy = { git = "https://github.com/alloy-rs/alloy", version = "0.1.0", features = [
+    "consensus",
+    "kzg",
+    "eips",
+    "contract",
+    "network",
+    "node-bindings",
+    "providers",
+    "provider-http",
+    "provider-ipc",
+    "provider-ws",
+    "rpc-client",
+    "rpc-client-ipc",
+    "rpc-client-ws",
+    "rpc-types-eth",
+    "rpc-types-trace",
+    "signers",
+    "hyper",
+    # "signer-aws",
+    # "signer-keystore",
+    # "signer-ledger",
+    "signer-mnemonic",
+    # "signer-trezor",
+    "signer-wallet",
+    # "signer-yubihsm",
+] }
