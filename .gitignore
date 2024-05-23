@@ -2,3 +2,4 @@
 target/
 # Dependency directories
 Cargo.lock
+.env

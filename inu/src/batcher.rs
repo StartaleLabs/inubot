@@ -5,7 +5,7 @@ use alloy::{
     network::eip2718::Encodable2718,
     primitives::FixedBytes,
     rpc::client::{BatchRequest, RpcClient},
-    transports::{http::hyper::client, Transport},
+    transports::Transport,
 };
 use eyre::Result;
 use tokio::{

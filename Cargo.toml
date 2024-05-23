@@ -1,7 +1,7 @@
 [workspace]
-members = ["inu", "redis"]
+members = ["inu"]
 resolver = "2"
-
+package.license = "MIT"
 
 [workspace.dependencies]
 serde = "1.0.202"
@@ -26,7 +26,7 @@ alloy = { git = "https://github.com/alloy-rs/alloy", version = "0.1.0", features
     "rpc-types-eth",
     "rpc-types-trace",
     "signers",
-    "hyper",
+    # "hyper",
     # "signer-aws",
     # "signer-keystore",
     # "signer-ledger",

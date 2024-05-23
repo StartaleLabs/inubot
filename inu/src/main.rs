@@ -1,71 +1,74 @@
-use std::sync::Arc;
-
-use actor::Actor;
+use actor::ActorManager;
 use alloy::{
-    network::{eip2718::Encodable2718, EthereumSigner, TransactionBuilder},
-    node_bindings::Anvil,
-    primitives::{hex, Address, ChainId, FixedBytes, U256},
-    providers::{Provider, ProviderBuilder},
-    rpc::{
-        self,
-        client::{BatchRequest, ClientBuilder, RpcClient, WsConnect},
-        types::eth::TransactionRequest,
-    },
-    signers::wallet::{coins_bip39::English, MnemonicBuilder},
-    transports::http::reqwest::Url,
+    providers::ProviderBuilder,
+    rpc::client::{BuiltInConnectionString, ClientBuilder},
 };
 use batcher::RawTxBatcher;
+use clap::Parser;
+use dotenv::dotenv;
 use eyre::Result;
-use tokio::{
-    sync::{mpsc, Notify},
-    task,
-};
+use std::{sync::Arc, time::Duration};
+use tokio::{sync::mpsc, time};
 
 pub mod actor;
 pub mod batcher;
 pub mod builder;
 
-async fn execute() -> Result<()> {
-    let phrase = "tree unlock also open enroll legal bike success innocent retreat business into reopen loyal couch witness mesh language squeeze subway proof fix predict flush";
-    // Create a provider.
-    // let rpc_url: Url = "https://op-inu.astar.network".parse()?;
-    let rpc_url: Url = "http://localhost:12345".parse()?;
-    let client = ClientBuilder::default().http(rpc_url.clone());
-    // let rpc_url = WsConnect::new("ws://localhost:12345");
-    // let client = ClientBuilder::default().ws(rpc_url.clone()).await?;
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    #[clap(short, long, required = true, help = "Sets the RPC URL")]
+    rpc_url: String,
+    #[clap(short, long, required = true, help = "Sets the maximum TPS")]
+    max_tps: usize,
+    #[clap(short, long, help = "Sets the duration in seconds")]
+    duration: Option<u64>,
+}
+
+async fn execute(args: Args) -> Result<()> {
+    let phrase = std::env::var("MNEMONIC")?;
+    let Args {
+        rpc_url,
+        max_tps,
+        duration,
+    } = args;
+
+    let connect: BuiltInConnectionString = rpc_url.parse()?;
+    let client = ClientBuilder::default().connect_boxed(connect).await?;
     let provider = Arc::new(
         ProviderBuilder::new()
             .with_recommended_fillers()
-            .on_http(rpc_url),
+            .on_builtin(&rpc_url)
+            .await?,
     );
 
-    let (tx, rx) = mpsc::channel(2000);
-    let alice = Actor::new(&phrase, 0, &provider, tx.clone()).await?;
-    let bob = Actor::new(&phrase, 1, &provider, tx).await?;
+    let (tx, rx) = mpsc::channel(max_tps * 10);
+    let mut manager = ActorManager::init_actors(&phrase, 150, &provider, tx.clone()).await?;
     let mut batcher = RawTxBatcher::new(rx, client);
+    // start actors
+    manager.spawn();
 
-    task::spawn(async move {
-        loop {
-            alice.start().await;
+    if let Some(duration) = duration {
+        match time::timeout(Duration::from_secs(duration), batcher.start(max_tps as u64)).await {
+            Ok(res) => {
+                if let Err(e) = res {
+                    println!("Batcher error: {:?}", e);
+                }
+            }
+            Err(_) => {}
         }
-    });
+    } else {
+        batcher.start(max_tps as u64).await?;
+    }
 
-    task::spawn(async move {
-        loop {
-            bob.start().await;
-        }
-    });
-
-    task::spawn(async move {
-        batcher.start(700).await.unwrap();
-    })
-    .await?;
-
+    manager.shutdown().await;
     Ok(())
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    execute().await?;
+    dotenv()?;
+    let args = Args::parse();
+    execute(args).await?;
     Ok(())
 }

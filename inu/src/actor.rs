@@ -1,16 +1,18 @@
 use alloy::{
     consensus::TxEnvelope,
     network::{EthereumSigner, TransactionBuilder},
-    primitives::Address,
+    primitives::{utils::parse_ether, Address, U256},
     providers::Provider,
-    signers::wallet::{coins_bip39::English, MnemonicBuilder},
+    rpc::types::eth::TransactionRequest,
+    signers::wallet::{coins_bip39::English, LocalWallet, MnemonicBuilder},
     transports::Transport,
 };
-use eyre::Result;
-use std::{sync::Arc, time::Duration};
+use eyre::{eyre, Result};
+use std::{ops::Range, sync::Arc, time::Duration};
 use tokio::{
     sync::{mpsc, watch, Mutex, Notify},
-    task, time,
+    task::{self, JoinHandle, JoinSet},
+    time,
 };
 
 use crate::builder::TxBuilder;
@@ -22,11 +24,11 @@ pub struct TxSendRequest {
 }
 
 #[derive(Clone, Debug)]
-pub struct Actor<T: Transport + Clone, P: Provider<T> + 'static> {
+pub struct Actor<T: Transport + Clone, P: Provider<T> + Clone + 'static> {
     pub inner: Arc<ActorInner<T, P>>,
 }
 
-impl<T: Transport + Clone, P: Provider<T> + 'static> Actor<T, P> {
+impl<T: Transport + Clone, P: Provider<T> + Clone + 'static> Actor<T, P> {
     pub async fn new(
         phrase: &str,
         index: u32,
@@ -37,16 +39,16 @@ impl<T: Transport + Clone, P: Provider<T> + 'static> Actor<T, P> {
         Ok(Actor { inner })
     }
 
-    pub async fn start(&self) {
+    pub fn start(&self, set: &mut JoinSet<()>) {
         let inner1 = self.inner.clone();
-        tokio::spawn(async move {
+        set.spawn(async move {
             loop {
                 inner1.send_tx().await.unwrap();
             }
         });
 
         let inner2 = self.inner.clone();
-        tokio::spawn(async move {
+        set.spawn(async move {
             inner2.listen_reset().await;
         });
     }
@@ -139,6 +141,131 @@ impl<T: Transport + Clone, P: Provider<T>> ActorInner<T, P> {
             // attempt to reset nonce
             let _ = self.reset_nonce().await;
             time::sleep(Duration::from_secs(2)).await;
+        }
+    }
+}
+
+pub struct ActorManager<T: Transport + Clone, P: Provider<T> + Clone + 'static> {
+    master: LocalWallet,
+    provider: Arc<P>,
+    actors: Vec<Actor<T, P>>,
+    tasks: JoinSet<()>,
+}
+
+const MAX_TPS_PER_ACTOR: u64 = 50;
+
+impl<T: Transport + Clone, P: Provider<T> + Clone + 'static> ActorManager<T, P> {
+    pub async fn init_actors(
+        phrase: &str,
+        max_tps: u64,
+        provider: &Arc<P>,
+        sender: mpsc::Sender<TxSendRequest>,
+    ) -> Result<ActorManager<T, P>> {
+        let num_accounts = (max_tps as f64 / MAX_TPS_PER_ACTOR as f64).ceil() as u32;
+        // first account is master account and only used to topup other actors
+        let master = MnemonicBuilder::<English>::default()
+            .phrase(phrase)
+            .index(0)?
+            .build()?;
+        let mut actors = Vec::new();
+        for idx in 1..(num_accounts + 1) {
+            actors.push(Actor::new(phrase, idx, provider, sender.clone()).await?);
+        }
+        let tasks = JoinSet::new();
+        let manager = ActorManager {
+            actors,
+            tasks,
+            master,
+            provider: provider.clone(),
+        };
+
+        // send funds
+        manager.send_funds().await?;
+        Ok(manager)
+    }
+
+    pub fn spawn(&mut self) {
+        for actor in self.actors.iter() {
+            actor.start(&mut self.tasks);
+        }
+    }
+
+    pub async fn send_funds(&self) -> Result<()> {
+        println!("Sending funds..");
+        // send funds to actors
+        let total = self
+            .provider
+            .get_balance(self.master.address())
+            .await?
+            // save 0.1 for later other operations
+            // TODO: better error handling
+            .checked_sub(parse_ether("0.1")?)
+            .ok_or(eyre!("Insufficient balance"))?;
+
+        // we need to send funds to all actors while retaining equal part in master account
+        let amount: U256 = total.div_ceil(U256::from(self.actors.len() + 1));
+        let mut futs = vec![];
+        for actor in self.actors.iter() {
+            let tx = TransactionRequest::default()
+                .from(self.master.address())
+                .to(actor.inner.address)
+                .value(amount);
+            futs.push(self.provider.send_transaction(tx).await?.get_receipt());
+        }
+
+        for fut in futs {
+            fut.await?;
+            println!("one of funds to be sent..");
+        }
+        println!("Funds sent");
+        Ok(())
+    }
+
+    pub async fn shutdown(&mut self) {
+        self.tasks.abort_all();
+        println!("Attempting to return funds before shutdown..");
+        for actor in self.actors.drain(..) {
+            loop {
+                // wait for some time to get pending tx to be processed
+                time::sleep(Duration::from_secs(2)).await;
+
+                let mut balance = match self.provider.get_balance(actor.inner.address).await {
+                    Ok(b) => b,
+                    Err(e) => {
+                        eprintln!("Failed to get balance for actor: {:?}", e);
+                        continue;
+                    }
+                };
+
+                // safe to unwrap since we know parse ether won't fail.
+                balance = balance.saturating_sub(parse_ether("0.0001").unwrap());
+                if balance.is_zero() {
+                    // no need to trasnfer anything
+                    break;
+                }
+
+                let tx = TransactionRequest::default()
+                    .from(actor.inner.address)
+                    .to(self.master.address())
+                    .value(balance);
+
+                match self.provider.send_transaction(tx).await {
+                    Ok(fut) => match fut.watch().await {
+                        Ok(_) => {
+                            println!("Funds returned for actor: {}", actor.inner.address);
+                            break;
+                        }
+                        Err(e) => {
+                            eprintln!("Failed to transfer funds, tx reverted: {:?}", e);
+                            continue;
+                        }
+                    },
+                    Err(e) => {
+                        eprintln!("Failed to transfer funds: {:?}", e);
+                        continue;
+                    }
+                }
+            }
         }
     }
 }

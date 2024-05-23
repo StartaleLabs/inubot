@@ -7,7 +7,10 @@ default-run = "inu"
 [dependencies]
 alloy = { workspace = true }
 chrono = "0.4.38"
+clap = { version = "4.5.4", features = ["derive"] }
+dotenv = "0.15.0"
 eyre = { workspace = true }
+futures = "0.3.30"
 futures-util = "0.3.30"
 rand = { workspace = true }
 # ethers = { workspace = true }
