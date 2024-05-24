@@ -8,11 +8,7 @@ use alloy::{
     transports::Transport,
 };
 use eyre::Result;
-use tokio::{
-    sync::mpsc,
-    task::{self, JoinHandle, JoinSet},
-    time,
-};
+use tokio::{sync::mpsc, task, time};
 use tokio_stream::{wrappers::ReceiverStream, StreamExt};
 
 use crate::actor::TxSendRequest;
@@ -39,15 +35,9 @@ impl<T: Transport + Clone> RawTxBatcher<T> {
                 &(hex::encode_prefixed(tx_req.transaction.encoded_2718()),),
             )?;
             task::spawn(async move {
-                let res = w.await;
-                match &res {
-                    Ok(hash) => {
-                        println!("{:?}", hash);
-                    }
-                    Err(e) => {
-                        println!("{}", e);
-                        tx_req.reset_notify.notify_one();
-                    }
+                if let Err(e) = w.await {
+                    println!("{}", e);
+                    tx_req.reset_notify.notify_one();
                 }
             });
         }

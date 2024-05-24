@@ -8,10 +8,10 @@ use alloy::{
     transports::Transport,
 };
 use eyre::{eyre, Result};
-use std::{ops::Range, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 use tokio::{
-    sync::{mpsc, watch, Mutex, Notify},
-    task::{self, JoinHandle, JoinSet},
+    sync::{mpsc, Mutex, Notify},
+    task::JoinSet,
     time,
 };
 
