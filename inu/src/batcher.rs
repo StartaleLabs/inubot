@@ -50,14 +50,6 @@ impl<T: Transport + Clone> RawTxBatcher<T> {
         let mut interval = time::interval(time::Duration::from_secs(1));
         let mut buffer = vec![];
         while let Some(tx) = self.rx_stream.next().await {
-            // println!("{:?}", tx.transaction);
-            // self.client
-            //     .request::<_, FixedBytes<32>>(
-            //         "eth_sendRawTransaction",
-            //         &(hex::encode_prefixed(tx.transaction.encoded_2718()),),
-            //     )
-            //     .await?;
-
             buffer.push(tx);
             if buffer.len() >= max_tps as usize {
                 let mut handles = vec![];

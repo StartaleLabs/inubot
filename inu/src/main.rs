@@ -1,13 +1,10 @@
 use actor::ActorManager;
-use alloy::{
-    providers::ProviderBuilder,
-    rpc::client::{BuiltInConnectionString, ClientBuilder},
-};
+use alloy::rpc::client::{BuiltInConnectionString, ClientBuilder};
 use batcher::RawTxBatcher;
 use clap::Parser;
 use dotenv::dotenv;
 use eyre::Result;
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 use tokio::{sync::mpsc, time};
 
 pub mod actor;
@@ -35,15 +32,14 @@ async fn execute(args: Args) -> Result<()> {
 
     let connect: BuiltInConnectionString = rpc_url.parse()?;
     let client = ClientBuilder::default().connect_boxed(connect).await?;
-    let provider = Arc::new(
-        ProviderBuilder::new()
-            .with_recommended_fillers()
-            .on_builtin(&rpc_url)
-            .await?,
-    );
+    // let provider = ProviderBuilder::new()
+    //     .with_recommended_fillers()
+    //     .on_builtin(&rpc_url)
+    //     .await?;
 
     let (tx, rx) = mpsc::channel(max_tps * 10);
-    let mut manager = ActorManager::init_actors(&phrase, 150, &provider, tx.clone()).await?;
+    let mut manager =
+        ActorManager::init_actors(&phrase, max_tps as u64, &rpc_url, tx.clone()).await?;
     let mut batcher = RawTxBatcher::new(rx, client);
     // start actors
     manager.spawn();

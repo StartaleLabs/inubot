@@ -1,11 +1,14 @@
 use alloy::{
     consensus::TxEnvelope,
-    network::{EthereumSigner, TransactionBuilder},
+    network::{Ethereum, EthereumSigner, TransactionBuilder},
     primitives::{utils::parse_ether, Address, U256},
-    providers::Provider,
+    providers::{
+        fillers::{ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller, SignerFiller},
+        Provider, ProviderBuilder, RootProvider,
+    },
     rpc::types::eth::TransactionRequest,
-    signers::wallet::{coins_bip39::English, LocalWallet, MnemonicBuilder},
-    transports::Transport,
+    signers::wallet::{coins_bip39::English, MnemonicBuilder},
+    transports::{BoxTransport, Transport},
 };
 use eyre::{eyre, Result};
 use std::{sync::Arc, time::Duration};
@@ -16,6 +19,19 @@ use tokio::{
 };
 
 use crate::builder::TxBuilder;
+
+type RecommendedProvider = FillProvider<
+    JoinFill<
+        JoinFill<
+            JoinFill<JoinFill<alloy::providers::Identity, GasFiller>, NonceFiller>,
+            ChainIdFiller,
+        >,
+        SignerFiller<EthereumSigner>,
+    >,
+    RootProvider<BoxTransport>,
+    BoxTransport,
+    Ethereum,
+>;
 
 #[derive(Debug, Clone)]
 pub struct TxSendRequest {
@@ -30,12 +46,12 @@ pub struct Actor<T: Transport + Clone, P: Provider<T> + Clone + 'static> {
 
 impl<T: Transport + Clone, P: Provider<T> + Clone + 'static> Actor<T, P> {
     pub async fn new(
-        phrase: &str,
-        index: u32,
-        provider: &Arc<P>,
+        address: Address,
+        signer: Arc<EthereumSigner>,
+        provider: Arc<P>,
         sender: mpsc::Sender<TxSendRequest>,
     ) -> Result<Actor<T, P>> {
-        let inner = Arc::new(ActorInner::new(phrase, index, provider, sender).await?);
+        let inner = Arc::new(ActorInner::new(address, signer, provider, sender).await?);
         Ok(Actor { inner })
     }
 
@@ -57,7 +73,7 @@ impl<T: Transport + Clone, P: Provider<T> + Clone + 'static> Actor<T, P> {
 #[derive(Clone, Debug)]
 pub struct ActorInner<T: Transport + Clone, P: Provider<T>> {
     pub address: Address,
-    pub signer: EthereumSigner,
+    pub signer: Arc<EthereumSigner>,
     pub nonce: Arc<Mutex<u64>>,
     pub provider: Arc<P>,
     pub chain_id: u64,
@@ -68,18 +84,12 @@ pub struct ActorInner<T: Transport + Clone, P: Provider<T>> {
 
 impl<T: Transport + Clone, P: Provider<T>> ActorInner<T, P> {
     pub async fn new(
-        phrase: &str,
-        index: u32,
-        provider: &Arc<P>,
+        address: Address,
+        signer: Arc<EthereumSigner>,
+        provider: Arc<P>,
         sender: mpsc::Sender<TxSendRequest>,
     ) -> Result<ActorInner<T, P>> {
-        let wallet = MnemonicBuilder::<English>::default()
-            .phrase(phrase)
-            .index(index)?
-            .build()?;
-        println!("Actor address: {}", wallet.address(),);
-        let address = wallet.address();
-        let signer = wallet.into();
+        println!("Actor address: {}", address);
         let nonce = Arc::new(Mutex::new(provider.get_transaction_count(address).await?));
         let chain_id = provider.get_chain_id().await?;
 
@@ -115,7 +125,7 @@ impl<T: Transport + Clone, P: Provider<T>> ActorInner<T, P> {
             .with_gas_limit(21_000)
             .with_max_priority_fee_per_gas(1_000_000_000)
             .with_max_fee_per_gas(20_000_000_000)
-            .build(&self.signer)
+            .build(self.signer.as_ref())
             .await?);
         res
     }
@@ -145,32 +155,72 @@ impl<T: Transport + Clone, P: Provider<T>> ActorInner<T, P> {
     }
 }
 
-pub struct ActorManager<T: Transport + Clone, P: Provider<T> + Clone + 'static> {
-    master: LocalWallet,
-    provider: Arc<P>,
-    actors: Vec<Actor<T, P>>,
+pub struct ActorManager {
+    master: Address,
+    provider: Arc<RecommendedProvider>,
+    actors: Vec<Actor<BoxTransport, RecommendedProvider>>,
     tasks: JoinSet<()>,
 }
 
 const MAX_TPS_PER_ACTOR: u64 = 50;
 
-impl<T: Transport + Clone, P: Provider<T> + Clone + 'static> ActorManager<T, P> {
+impl ActorManager {
+    /// Build the multi signer with master and actor address
+    /// Returns the signer, master address and actor addresses
+    async fn build_signer(
+        phrase: &str,
+        num_actors: u32,
+    ) -> Result<(EthereumSigner, Address, Vec<Address>)> {
+        let master = MnemonicBuilder::<English>::default()
+            .phrase(phrase)
+            .index(0)
+            .unwrap()
+            .build()?;
+        let master_address = master.address();
+        let mut actor_address = vec![];
+        let mut signer = EthereumSigner::new(master);
+
+        for i in 1..(num_actors + 1) {
+            let wallet = MnemonicBuilder::<English>::default()
+                .phrase(phrase)
+                .index(i)
+                .unwrap()
+                .build()?;
+            actor_address.push(wallet.address());
+            signer.register_signer(wallet);
+        }
+
+        Ok((signer, master_address, actor_address))
+    }
+
     pub async fn init_actors(
         phrase: &str,
         max_tps: u64,
-        provider: &Arc<P>,
+        rpc_url: &str,
         sender: mpsc::Sender<TxSendRequest>,
-    ) -> Result<ActorManager<T, P>> {
+    ) -> Result<ActorManager> {
         let num_accounts = (max_tps as f64 / MAX_TPS_PER_ACTOR as f64).ceil() as u32;
         // first account is master account and only used to topup other actors
-        let master = MnemonicBuilder::<English>::default()
-            .phrase(phrase)
-            .index(0)?
-            .build()?;
+        let (signer, master, actor_addresses) = Self::build_signer(phrase, num_accounts).await?;
+        let signer_clone = Arc::new(signer.clone());
+        //sanity check
+        assert_eq!(num_accounts, actor_addresses.len() as u32);
+
+        let provider = Arc::new(
+            ProviderBuilder::new()
+                .with_recommended_fillers()
+                .filler(SignerFiller::new(signer))
+                .on_builtin(&rpc_url)
+                .await?,
+        );
+
         let mut actors = Vec::new();
-        for idx in 1..(num_accounts + 1) {
-            actors.push(Actor::new(phrase, idx, provider, sender.clone()).await?);
+        for addr in actor_addresses {
+            let actor =
+                Actor::new(addr, signer_clone.clone(), provider.clone(), sender.clone()).await?;
+            actors.push(actor);
         }
+
         let tasks = JoinSet::new();
         let manager = ActorManager {
             actors,
@@ -195,7 +245,7 @@ impl<T: Transport + Clone, P: Provider<T> + Clone + 'static> ActorManager<T, P> 
         // send funds to actors
         let total = self
             .provider
-            .get_balance(self.master.address())
+            .get_balance(self.master)
             .await?
             // save 0.1 for later other operations
             // TODO: better error handling
@@ -207,7 +257,7 @@ impl<T: Transport + Clone, P: Provider<T> + Clone + 'static> ActorManager<T, P> 
         let mut futs = vec![];
         for actor in self.actors.iter() {
             let tx = TransactionRequest::default()
-                .from(self.master.address())
+                .from(self.master)
                 .to(actor.inner.address)
                 .value(amount);
             futs.push(self.provider.send_transaction(tx).await?.get_receipt());
@@ -227,7 +277,7 @@ impl<T: Transport + Clone, P: Provider<T> + Clone + 'static> ActorManager<T, P> 
         for actor in self.actors.drain(..) {
             loop {
                 // wait for some time to get pending tx to be processed
-                time::sleep(Duration::from_secs(2)).await;
+                time::sleep(Duration::from_secs(5)).await;
 
                 let mut balance = match self.provider.get_balance(actor.inner.address).await {
                     Ok(b) => b,
@@ -246,7 +296,7 @@ impl<T: Transport + Clone, P: Provider<T> + Clone + 'static> ActorManager<T, P> 
 
                 let tx = TransactionRequest::default()
                     .from(actor.inner.address)
-                    .to(self.master.address())
+                    .to(self.master)
                     .value(balance);
 
                 match self.provider.send_transaction(tx).await {
@@ -257,6 +307,7 @@ impl<T: Transport + Clone, P: Provider<T> + Clone + 'static> ActorManager<T, P> 
                         }
                         Err(e) => {
                             eprintln!("Failed to transfer funds, tx reverted: {:?}", e);
+                            eprintln!("Attempting again in 5s");
                             continue;
                         }
                     },
