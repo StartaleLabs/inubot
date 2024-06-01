@@ -11,5 +11,6 @@ impl TxBuilder {
             .with_from(from)
             .to(from)
             .with_value(U256::from(10))
+            .with_gas_limit(21_000)
     }
 }

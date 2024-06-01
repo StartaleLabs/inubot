@@ -26,6 +26,8 @@ alloy = { git = "https://github.com/alloy-rs/alloy", version = "0.1.0", features
     "rpc-types-eth",
     "rpc-types-trace",
     "signers",
+    "rpc",
+    "json-rpc",
     # "hyper",
     # "signer-aws",
     # "signer-keystore",

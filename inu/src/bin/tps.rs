@@ -133,7 +133,13 @@ async fn pubsub_update(stats: &mut ChainStats, rpc_url: String) -> Result<()> {
     // // Subscribe to blocks.
     let subscription = provider.subscribe_blocks().await?;
     let mut stream = subscription.into_stream();
-    while let Some(block) = stream.next().await {
+    while let Some(mut block) = stream.next().await {
+        if block.header.hash.is_some() && block.transactions.is_empty() {
+            block = provider
+                .get_block(block.header.hash.unwrap().into(), true)
+                .await?
+                .unwrap();
+        }
         stats.update(&block);
         stats.print_summary();
     }
