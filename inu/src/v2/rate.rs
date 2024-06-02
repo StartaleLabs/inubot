@@ -1,8 +1,4 @@
-use alloy::{
-    primitives::Address,
-    providers::{PendingTransactionBuilder, Provider},
-    transports::utils::Spawnable,
-};
+use alloy::{primitives::Address, providers::Provider, transports::utils::Spawnable};
 use eyre::{eyre, Result};
 use governor::{DefaultDirectRateLimiter, Quota};
 use std::{num::NonZeroU32, sync::Arc, time::Duration};
@@ -10,7 +6,7 @@ use thiserror::Error;
 use tokio::{sync::mpsc, task};
 use tracing::debug;
 
-use crate::v2::nonce::{FailContext, NonceHandle};
+use crate::v2::nonce::{TxFailContext, NonceHandle};
 
 #[derive(Error, Debug)]
 pub enum InuError {
@@ -75,23 +71,20 @@ impl<P: Provider + 'static> RateController<P> {
 
         let nonce = nonce_handle.get();
 
-        // send rpc request to get hash
-        // TODO: make this non-awaiting, right now we wait till server send the request back which is slow
-        //       for each request.
-        //       Solution: make batch requests
+        // send rpc request and await for reciept
+        // TODO: make this deterministically sequential, otherwise rpc requests with higher nonce might
+        // be sent before the lower nonce
         let provider_clone = self.provider.clone();
-        match provider_clone.send_raw_transaction(&encoded_tx).await {
-            // if succeeded, spawn a task to wait for receipt
-            Ok(pending) => {
-                let hash = pending.tx_hash().clone();
-                task::spawn(async move {
-                    let pending = PendingTransactionBuilder::new(provider_clone.root(), hash);
+        task::spawn(async move {
+            match provider_clone.send_raw_transaction(&encoded_tx).await {
+                // if succeeded, spawn a task to wait for receipt
+                Ok(pending) => {
                     // free the nonce if error, assuming tx is stuck
                     // TODO: better error handling
                     if let Err(error) = pending.with_timeout(Some(timeout)).get_receipt().await {
                         debug!("nonce {} freed! error waiting tx: {:?}", nonce, error);
                         nonce_handle
-                            .failed(FailContext {
+                            .failed(TxFailContext {
                                 gas_price,
                                 error,
                                 might_be_timeout: true,
@@ -99,21 +92,21 @@ impl<P: Provider + 'static> RateController<P> {
                             .free()
                             .await;
                     };
-                });
-            }
-            // rpc call failed, free the nonce without marking as timeout
-            Err(error) => {
-                debug!("nonce {} freed! error sending tx: {:?}", nonce, error);
-                nonce_handle
-                    .failed(FailContext {
-                        gas_price,
-                        might_be_timeout: false,
-                        error,
-                    })
-                    .free()
-                    .await;
-            }
-        };
+                }
+                // rpc call failed, free the nonce without marking as timeout
+                Err(error) => {
+                    debug!("nonce {} freed! error sending tx: {:?}", nonce, error);
+                    nonce_handle
+                        .failed(TxFailContext {
+                            gas_price,
+                            might_be_timeout: false,
+                            error,
+                        })
+                        .free()
+                        .await;
+                }
+            };
+        });
     }
 
     async fn into_future(self, mut ixns: mpsc::Receiver<SendConfig>) {
@@ -135,7 +128,7 @@ impl<P: Provider + 'static> RateController<P> {
     }
 
     pub fn spawn(self) -> RateControllerHandle {
-        let (ix_tx, ixns) = mpsc::channel(1);
+        let (ix_tx, ixns) = mpsc::channel(self.max_tps.get() as usize);
 
         self.into_future(ixns).spawn_task();
 
