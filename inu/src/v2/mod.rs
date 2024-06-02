@@ -12,6 +12,7 @@ pub mod actor;
 pub mod gas_oracle;
 pub mod nonce;
 pub mod rate;
+pub mod error;
 
 pub async fn execute(args: &Args) -> Result<()> {
     let phrase = std::env::var("MNEMONIC")?;

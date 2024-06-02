@@ -24,13 +24,12 @@ use tracing::debug;
 use crate::{
     builder::TxBuilder,
     v2::{
+        error::TxRpcError,
         gas_oracle::GasPriceChannel,
-        nonce::NonceManager,
+        nonce::{NonceManager, TxFailContext},
         rate::{RateControllerHandle, SendConfig},
     },
 };
-
-use super::nonce::FailContext;
 
 const MAX_TPS_PER_ACTOR: u64 = 50;
 // const ETH_DUST_TO_IGNORE: u128 = 1_000_000_000_000_000; // 0.001 ETH
@@ -64,6 +63,8 @@ pub enum ActorError {
         actor_address: Address,
         balance: U256,
     },
+    #[error("Unhandled rpc error - {0}")]
+    UnhandledRpcError(ErrorPayload),
     /// Any unhandled transport error that is not potentially tx timeout
     #[error(transparent)]
     UnhandledTransportError(#[from] TransportError),
@@ -127,7 +128,7 @@ impl<P: Provider<BoxTransport>, S: NetworkSigner<Ethereum>> Actor<P, S> {
         let nonce = nonce_handle.get();
         let mut gas_price = self.get_gas_price();
 
-        if let Some(FailContext {
+        if let Some(TxFailContext {
             gas_price: old_gas_price,
             might_be_timeout,
             error,
@@ -136,23 +137,32 @@ impl<P: Provider<BoxTransport>, S: NetworkSigner<Ethereum>> Actor<P, S> {
             match error {
                 RpcError::ErrorResp(resp) => {
                     // TODO: find and handle other cases
-                    if resp.message.to_lowercase().contains("insufficient fund") {
-                        return Err(ActorError::NotSufficentFunds {
-                            resp,
-                            actor_address: self.address,
-                            balance: self.provider.get_balance(self.address).await?,
-                        });
-                    } else if resp.message.contains("already imported") {
-                        // nonce is alredy used, skip it and continue
-                        // TODO: handle this better
-                        debug!("skipping as nonce {} already imported", nonce);
-                        return Ok(());
-                    } else if resp.message.contains("replacement transaction underpriced") {
-                        gas_price = self.apply_gas_multiplier(gas_price.max(old_gas_price));
-                        debug!(
-                            "gas price increased to {} from {} for nonce {}",
-                            gas_price, old_gas_price, nonce
-                        );
+                    match resp.clone().into() {
+                        TxRpcError::NonceTooLow | TxRpcError::AlreadyImported => {
+                            // nonce is alredy used, skip it and continue
+                            // TODO: handle this better
+                            debug!("skipping as nonce {} already imported", nonce);
+                            return Ok(());
+                        }
+                        TxRpcError::Underpriced => {
+                            gas_price = self.apply_gas_multiplier(gas_price.max(old_gas_price));
+                            debug!(
+                                "gas price increased to {} from {} for nonce {}",
+                                gas_price, old_gas_price, nonce
+                            );
+                        }
+                        TxRpcError::InsufficientFunds => {
+                            return Err(ActorError::NotSufficentFunds {
+                                resp,
+                                actor_address: self.address,
+                                balance: self.provider.get_balance(self.address).await?,
+                            });
+                        }
+                        TxRpcError::Other { .. } => {
+                            // TODO: we return error for now to identify cases that are not handled
+                            //       once we conver enough this should be removed
+                            return Err(ActorError::UnhandledRpcError(resp));
+                        }
                     }
                 }
                 // tricky to handle this case since pending tx timeout also return this error
@@ -171,13 +181,15 @@ impl<P: Provider<BoxTransport>, S: NetworkSigner<Ethereum>> Actor<P, S> {
             }
         }
 
-        let encoded_tx = TxBuilder::build(self.address.clone())
+        let tx = TxBuilder::build(self.address.clone())
             .with_nonce(nonce)
             .with_chain_id(self.chain_id)
             .with_gas_price(gas_price)
-            .with_gas_limit(21_000)
-            // .with_max_priority_fee_per_gas(1_000_000_000)
-            // .with_max_fee_per_gas(20_000_000_000)
+            .with_gas_limit(21_000);
+
+        // debug!("using nonce {nonce} to send tx: {tx:?}");
+
+        let encoded_tx = tx
             .build(&*self.signer)
             .await
             .map_err(|e| ActorError::OtherError(e.into()))?
