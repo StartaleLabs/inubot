@@ -6,7 +6,7 @@ use tokio::sync::Mutex;
 use tracing::debug;
 
 #[derive(Debug)]
-pub struct FailContext {
+pub struct TxFailContext {
     pub gas_price: u128,
     pub might_be_timeout: bool,
     pub error: TransportError,
@@ -24,7 +24,7 @@ pub struct FailContext {
 
 #[derive(Debug)]
 enum NonceVal {
-    Failed { val: u64, context: FailContext },
+    Failed { val: u64, context: TxFailContext },
     New { val: u64 },
 }
 
@@ -65,7 +65,7 @@ pub struct NonceManagerInner {
 impl NonceManagerInner {
     fn new(initial_nonce: u64) -> Self {
         Self {
-            next_nonce: AtomicU64::new(initial_nonce + 1),
+            next_nonce: AtomicU64::new(initial_nonce),
             free_nonces: Mutex::new(BTreeSet::new()),
         }
     }
@@ -102,7 +102,7 @@ pub struct NonceHandle {
 }
 
 impl NonceHandle {
-    pub fn failed(mut self, context: FailContext) -> Self {
+    pub fn failed(mut self, context: TxFailContext) -> Self {
         self.val = NonceVal::Failed {
             val: self.val.get(),
             context,
@@ -110,7 +110,7 @@ impl NonceHandle {
         self
     }
 
-    pub fn consume_failed(self) -> (Self, Option<FailContext>) {
+    pub fn consume_failed(self) -> (Self, Option<TxFailContext>) {
         match self.val {
             NonceVal::Failed { val, context } => (
                 NonceHandle {
@@ -186,7 +186,7 @@ mod test {
             nonce1.free().await;
             // free 2 with error
             nonce2
-                .failed(FailContext {
+                .failed(TxFailContext {
                     gas_price: 100,
                     might_be_timeout: false,
                     error: TransportErrorKind::backend_gone(),
