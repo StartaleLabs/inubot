@@ -27,7 +27,7 @@ struct Args {
         short,
         long,
         help = "Set the timeout for tx before marking it stuck",
-        default_value = "4"
+        default_value = "15"
     )]
     tx_timeout: u64,
 }
