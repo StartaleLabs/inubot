@@ -1,0 +1,11 @@
+tx_timeout = "15s"
+tps_per_actor = 50
+account_dust_amount = 0.0001
+
+[networks.op-inu]
+avg_block_time = 2
+rpc_url = "ws://op-inu.astar.network:8546"
+default = true
+
+[networks.local]
+rpc_url = "ws://localhost:8545"

@@ -1,118 +1,129 @@
-use actor::ActorManager;
-use alloy::rpc::client::{BuiltInConnectionString, ClientBuilder};
-use batcher::RawTxBatcher;
-use clap::Parser;
+use crate::{actor::ActorManager, gas_oracle::GasPricePoller, rate::RateController};
+use alloy::providers::{Provider, ProviderBuilder};
+use cli::{Commands, InuConfig, RunArgs};
 use dotenv::dotenv;
 use eyre::Result;
-use std::time::Duration;
-use tokio::{sync::mpsc, time};
-use tracing::Level;
+use std::sync::Arc;
+use tokio::{select, signal, time};
+use tracing::{debug, info};
 use tracing_subscriber::EnvFilter;
 
 pub mod actor;
-pub mod batcher;
 pub mod builder;
-pub mod v2;
+pub mod cli;
+pub mod error;
+pub mod gas_oracle;
+pub mod nonce;
+pub mod rate;
 
-#[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
-struct Args {
-    #[clap(short, long, required = true, help = "Sets the RPC URL")]
-    rpc_url: String,
-    #[clap(short, long, required = true, help = "Sets the maximum TPS")]
-    max_tps: u32,
-    #[clap(short, long, help = "Sets the duration in seconds")]
-    duration: Option<u64>,
-    #[clap(
-        short,
-        long,
-        help = "Set the timeout for tx before marking it stuck",
-        default_value = "15"
-    )]
-    tx_timeout: u64,
-}
+async fn start_inu(config: InuConfig) -> Result<()> {
+    let network = config.get_network();
+    let global_agrs = config.get_global();
+    let provider = ProviderBuilder::new()
+        .with_recommended_fillers()
+        .on_builtin(&network.rpc_url)
+        .await?;
 
-async fn execute(args: Args) -> Result<()> {
-    let phrase = std::env::var("MNEMONIC")?;
-    let Args {
-        rpc_url,
-        max_tps,
-        duration,
-        tx_timeout: _timeout,
-    } = args;
+    match config.get_command() {
+        Commands::Run(args) => {
+            let RunArgs { max_tps, duration } = args;
+            let provider_shared = Arc::new(provider.clone());
+            // init the gas poller and spwan it
+            let gas_oracle = GasPricePoller::new(provider_shared.weak_client())
+                .with_init_value(0)
+                .spawn();
 
-    let connect: BuiltInConnectionString = rpc_url.parse()?;
-    let client = ClientBuilder::default().connect_boxed(connect).await?;
-    // let provider = ProviderBuilder::new()
-    //     .with_recommended_fillers()
-    //     .on_builtin(&rpc_url)
-    //     .await?;
+            // init the rate controller and spawn it
+            let rate_handle = RateController::new(provider_shared.clone())
+                .with_tps(*max_tps)?
+                .spawn();
 
-    let (tx, rx) = mpsc::channel((max_tps * 10) as usize);
-    let mut manager =
-        ActorManager::init_actors(&phrase, max_tps as u64, &rpc_url, tx.clone()).await?;
-    let mut batcher = RawTxBatcher::new(rx, client);
-    // start actors
-    manager.spawn();
+            let mut manager = ActorManager::new(
+                config.get_mnemonic(),
+                *max_tps,
+                global_agrs.tps_per_actor,
+                provider,
+                rate_handle,
+                1.5,
+                gas_oracle,
+            )
+            .await?;
 
-    if let Some(duration) = duration {
-        match time::timeout(Duration::from_secs(duration), batcher.start(max_tps as u64)).await {
-            Ok(res) => {
-                if let Err(e) = res {
-                    println!("Batcher error: {:?}", e);
+            // setup the actors
+            manager.fund_actors().await?;
+            // spawn actors
+            manager.spawn_actors(global_agrs.tx_timeout);
+
+            'main: loop {
+                select! {
+                    _ = manager.wait_for_error() => {
+                        manager.shutdown().await;
+                        break 'main;
+                    }
+                    res = signal::ctrl_c() => {
+                        if res.is_ok() {
+                            debug!("ctrl-c received!");
+                            manager.shutdown().await;
+                            break 'main;
+                        } else {
+                            debug!("failed to receive ctrl-c signal, ignoring..");
+                        }
+                    }
+                    _ = time::sleep(*duration) => {
+                        manager.shutdown().await;
+                        break 'main;
+                    }
                 }
             }
-            Err(_) => {}
         }
-    } else {
-        batcher.start(max_tps as u64).await?;
+        Commands::Withdraw(args) => {
+            let RunArgs { max_tps, .. } = args;
+            let provider_shared = Arc::new(provider.clone());
+            // init the gas poller and spwan it
+            let gas_oracle = GasPricePoller::new(provider_shared.weak_client())
+                .with_init_value(0)
+                .spawn();
+
+            // init the rate controller and spawn it
+            let rate_handle = RateController::new(provider_shared.clone())
+                .with_tps(*max_tps)?
+                .spawn();
+
+            let manager = ActorManager::new(
+                config.get_mnemonic(),
+                *max_tps,
+                global_agrs.tps_per_actor,
+                provider,
+                rate_handle,
+                1.5,
+                gas_oracle,
+            )
+            .await?;
+
+            // withraw fund
+            manager.attempt_to_send_funds_back().await
+        }
     }
 
-    manager.shutdown().await;
     Ok(())
 }
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    dotenv()?;
-    let args = Args::parse();
-
+fn setup_tracing() {
     // construct a subscriber that prints formatted traces to stdout
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::from_default_env())
         // .with_max_level(Level::DEBUG)
         .with_ansi(false)
         .init();
-
-    v2::execute(&args).await?;
-    Ok(())
 }
 
-// #[tokio::main]
-// async fn main() -> Result<()> {
-//     let connect: BuiltInConnectionString = "ws://op-inu.astar.network:8546".parse()?;
-//     let client = ClientBuilder::default().connect_boxed(connect).await?;
+#[tokio::main]
+async fn main() -> Result<()> {
+    setup_tracing();
+    dotenv()?;
+    info!("Initializing");
+    let config = InuConfig::load()?;
 
-//     let poller = GasPricePoller::new(client.get_weak()).with_poll_interval(Duration::from_secs(1));
-//     let ch1 = poller.spawn();
-//     let ch2 = ch1.clone();
-
-//     let h1 = tokio::spawn(async move {
-//         let mut stream = ch1.into_stream();
-//         while let Some(price) = stream.next().await {
-//             println!("Thread1: Gas price: {}", price);
-//         }
-//     });
-
-//     let h2 = tokio::spawn(async move {
-//         let mut stream = ch2.into_stream();
-//         while let Some(price) = stream.next().await {
-//             println!("Thread2: Gas price: {}", price);
-//         }
-//     });
-
-//     h1.await?;
-//     h2.await?;
-
-//     Ok(())
-// }
+    start_inu(config).await?;
+    Ok(())
+}

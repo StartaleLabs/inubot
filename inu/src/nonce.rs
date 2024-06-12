@@ -12,16 +12,6 @@ pub struct TxFailContext {
     pub error: TransportError,
 }
 
-// impl Clone for FailContext {
-//     fn clone(&self) -> Self {
-//         Self {
-//             gas_price: self.gas_price,
-//             might_be_timeout: self.might_be_timeout,
-//             error: self.error.to_owned(),
-//         }
-//     }
-// }
-
 #[derive(Debug)]
 enum NonceVal {
     Failed { val: u64, context: TxFailContext },
@@ -72,16 +62,16 @@ impl NonceManagerInner {
 
     async fn next_nonce(&self) -> NonceVal {
         let mut free_lock = self.free_nonces.lock().await;
-        debug!("freed nonces count: {}", free_lock.len());
+        // debug!("freed nonces count: {}", free_lock.len());
         let free_nonce = free_lock.pop_first();
         drop(free_lock);
 
         if let Some(nonce) = free_nonce {
-            debug!("got freed nonce: {}", nonce.get());
+            // debug!("got freed nonce: {}", nonce.get());
             nonce
         } else {
             let next_nonce = self.next_nonce.fetch_add(1, Ordering::Relaxed);
-            debug!("got new nonce: {}", next_nonce);
+            // debug!("got new nonce: {}", next_nonce);
             NonceVal::New { val: next_nonce }
         }
     }
@@ -154,6 +144,10 @@ impl NonceManager {
 
     pub async fn freed_count(&self) -> usize {
         self.inner().free_nonces.lock().await.len()
+    }
+
+    pub fn head(&self) -> u64 {
+        self.inner().head()
     }
 
     pub async fn pop_freed(&self) -> Option<NonceHandle> {

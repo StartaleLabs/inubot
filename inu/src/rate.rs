@@ -1,12 +1,12 @@
-use alloy::{primitives::Address, providers::Provider, transports::utils::Spawnable};
+use alloy::{hex, primitives::Address, providers::Provider, transports::utils::Spawnable};
 use eyre::{eyre, Result};
 use governor::{DefaultDirectRateLimiter, Quota};
 use std::{num::NonZeroU32, sync::Arc, time::Duration};
 use thiserror::Error;
-use tokio::{sync::mpsc, task};
-use tracing::debug;
+use tokio::sync::mpsc;
+use tracing::{debug, debug_span, trace, trace_span, warn, Instrument};
 
-use crate::v2::nonce::{TxFailContext, NonceHandle};
+use crate::nonce::{NonceHandle, TxFailContext};
 
 #[derive(Error, Debug)]
 pub enum InuError {
@@ -20,6 +20,7 @@ pub enum InuError {
     SignerMissing(Address),
 }
 pub struct SendConfig {
+    pub from: Address,
     pub encoded_tx: Vec<u8>,
     pub gas_price: u128,
     pub nonce_handle: NonceHandle,
@@ -67,35 +68,47 @@ impl<P: Provider + 'static> RateController<P> {
             gas_price,
             nonce_handle,
             timeout,
+            from,
         } = config;
 
         let nonce = nonce_handle.get();
+        let span = trace_span!(
+            "handle_new_request",
+            from = from.to_string(),
+            nonce = nonce,
+            gas_price = gas_price
+        );
 
         // send rpc request and await for reciept
         // TODO: make this deterministically sequential, otherwise rpc requests with higher nonce might
         // be sent before the lower nonce
         let provider_clone = self.provider.clone();
-        task::spawn(async move {
+        let fut = async move {
             match provider_clone.send_raw_transaction(&encoded_tx).await {
                 // if succeeded, spawn a task to wait for receipt
                 Ok(pending) => {
                     // free the nonce if error, assuming tx is stuck
                     // TODO: better error handling
-                    if let Err(error) = pending.with_timeout(Some(timeout)).get_receipt().await {
-                        debug!("nonce {} freed! error waiting tx: {:?}", nonce, error);
-                        nonce_handle
-                            .failed(TxFailContext {
-                                gas_price,
-                                error,
-                                might_be_timeout: true,
-                            })
-                            .free()
-                            .await;
-                    };
+                    match pending.with_timeout(Some(timeout)).get_receipt().await {
+                        Ok(receipt) => {
+                            trace!("tx succesful: {}", receipt.transaction_hash);
+                        }
+                        Err(error) => {
+                            warn!("nonce freed with timeout, error waiting tx: {:?}", error);
+                            nonce_handle
+                                .failed(TxFailContext {
+                                    gas_price,
+                                    error,
+                                    might_be_timeout: true,
+                                })
+                                .free()
+                                .await;
+                        }
+                    }
                 }
                 // rpc call failed, free the nonce without marking as timeout
                 Err(error) => {
-                    debug!("nonce {} freed! error sending tx: {:?}", nonce, error);
+                    warn!("nonce freed, error sending tx: {:?}", error);
                     nonce_handle
                         .failed(TxFailContext {
                             gas_price,
@@ -106,12 +119,14 @@ impl<P: Provider + 'static> RateController<P> {
                         .await;
                 }
             };
-        });
+        };
+        fut.instrument(span).spawn_task();
     }
 
     async fn into_future(self, mut ixns: mpsc::Receiver<SendConfig>) {
         'shutdown: loop {
             let limiter = DefaultDirectRateLimiter::direct(Quota::per_second(self.max_tps));
+            debug!("loop started");
             loop {
                 // wait until permitted
                 limiter.until_ready().await;
@@ -128,9 +143,11 @@ impl<P: Provider + 'static> RateController<P> {
     }
 
     pub fn spawn(self) -> RateControllerHandle {
-        let (ix_tx, ixns) = mpsc::channel(self.max_tps.get() as usize);
+        // TODO: revist channel size, maybe make it configurable
+        let (ix_tx, ixns) = mpsc::channel(64);
+        let span = trace_span!("rate_controller", max_tps = %self.max_tps);
 
-        self.into_future(ixns).spawn_task();
+        self.into_future(ixns).instrument(span).spawn_task();
 
         RateControllerHandle { tx: ix_tx }
     }
