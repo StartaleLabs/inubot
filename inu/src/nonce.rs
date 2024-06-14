@@ -3,7 +3,6 @@ use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tracing::debug;
 
 #[derive(Debug)]
 pub struct TxFailContext {

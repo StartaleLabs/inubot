@@ -19,7 +19,7 @@ use std::time::Duration;
 use thiserror::Error;
 use tokio::{sync, task::JoinSet, time};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, info_span, instrument, trace, Instrument, Level};
+use tracing::{debug, error, info, info_span, instrument, Instrument, Level};
 
 use crate::{
     builder::TxBuilder,
@@ -264,24 +264,22 @@ impl<P: Provider<BoxTransport>, S: NetworkSigner<Ethereum>> Actor<P, S> {
 
     // send all the funds to a EOA account
     // NOTE: should not be used with contract address otheriwse gas estimation will be wrong
-    #[instrument(level=Level::TRACE, skip_all, err(level = Level::ERROR))]
+    #[instrument(skip_all, err(level = Level::ERROR))]
     pub async fn send_all_funds(&self, to: Address) -> Result<TransactionReceipt> {
         let code = self.provider.get_code_at(to).await?;
         if !code.is_empty() {
             return Err(eyre!("cannot send funds to contract address"));
         }
 
-        let balance = self.provider.get_balance(self.address).await?;
         let nonce = self.provider.get_transaction_count(self.address).await?;
         let gas_price = self.get_gas_price();
-        let cost = gas_price * 21_000;
+        let gas_limit = 21_000;
+        let balance = self.provider.get_balance(self.address).await?;
+        let cost = gas_price * gas_limit;
         let transferrable = balance.saturating_sub(U256::from(cost));
-        trace!(
+        debug!(
             "balance: {}, transferrable: {}, cost: {}, nonce: {}",
-            balance,
-            transferrable,
-            cost,
-            nonce
+            balance, transferrable, cost, nonce
         );
         if transferrable.is_zero() {
             return Err(eyre!("not enough funds to send"));
@@ -290,9 +288,9 @@ impl<P: Provider<BoxTransport>, S: NetworkSigner<Ethereum>> Actor<P, S> {
         let tx = TransactionRequest::default()
             .from(self.address)
             .to(to)
-            .value(U256::from(10))
+            .value(U256::from(transferrable))
             .with_gas_price(gas_price)
-            .with_gas_limit(21_000)
+            .with_gas_limit(gas_limit)
             .with_nonce(nonce)
             .with_chain_id(self.chain_id)
             .build(&*self.signer)
@@ -320,7 +318,7 @@ pub struct ActorManager {
 }
 
 impl ActorManager {
-    #[instrument(level=Level::TRACE, skip(phrase, provider, rate_handle, gas_oracle))]
+    #[instrument(name = "manager::new", skip(phrase, provider, rate_handle, gas_oracle))]
     pub async fn new(
         phrase: &str,
         max_tps: u32,
@@ -430,6 +428,7 @@ impl ActorManager {
 
             let span = info_span!("actor_task", actor = actor.address.to_string());
             let fut = async move {
+                info!("spawned");
                 'shutdown: loop {
                     // biased select to prioritize tx send over shutdown signal
                     // to prevent nonce race conditions
@@ -474,17 +473,15 @@ impl ActorManager {
             let master_address = self.master_address;
             let span = info_span!("funds_back", actor = actor.address.to_string());
             let fut = async move {
-                let reciept = actor.send_all_funds(master_address).await?;
-                info!("success, tx hash - {}", reciept.transaction_hash);
-                Ok::<_, eyre::Error>(())
+                if let Ok(reciept) = actor.send_all_funds(master_address).await {
+                    info!("success, tx hash - {}", reciept.transaction_hash);
+                }
             };
 
             tokio::spawn(fut.instrument(span))
         });
 
-        for handle in handles {
-            let _ = handle.await;
-        }
+        futures::future::join_all(handles).await;
     }
 }
 

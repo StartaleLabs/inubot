@@ -1,10 +1,10 @@
-use alloy::{hex, primitives::Address, providers::Provider, transports::utils::Spawnable};
+use alloy::{primitives::Address, providers::Provider, transports::utils::Spawnable};
 use eyre::{eyre, Result};
 use governor::{DefaultDirectRateLimiter, Quota};
 use std::{num::NonZeroU32, sync::Arc, time::Duration};
 use thiserror::Error;
 use tokio::sync::mpsc;
-use tracing::{debug, debug_span, trace, trace_span, warn, Instrument};
+use tracing::{debug, info_span, trace, warn, Instrument};
 
 use crate::nonce::{NonceHandle, TxFailContext};
 
@@ -72,7 +72,7 @@ impl<P: Provider + 'static> RateController<P> {
         } = config;
 
         let nonce = nonce_handle.get();
-        let span = trace_span!(
+        let span = info_span!(
             "handle_new_request",
             from = from.to_string(),
             nonce = nonce,
@@ -145,7 +145,7 @@ impl<P: Provider + 'static> RateController<P> {
     pub fn spawn(self) -> RateControllerHandle {
         // TODO: revist channel size, maybe make it configurable
         let (ix_tx, ixns) = mpsc::channel(64);
-        let span = trace_span!("rate_controller", max_tps = %self.max_tps);
+        let span = info_span!("rate_controller", max_tps = %self.max_tps);
 
         self.into_future(ixns).instrument(span).spawn_task();
 

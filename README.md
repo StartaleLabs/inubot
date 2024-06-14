@@ -7,11 +7,11 @@ Produce fixed TPS stress for a EVM RPC compatible chain.
 
 ## TODO
 
-- [ ] Reduce nonce retry overhead
+- [x] Reduce nonce retry overhead
 - [ ] Add complex evm tx (erc20, dex, etc) in builder
-- [ ] Add better error handling and logs
-- [ ] Add support for dynamic gas price
-- [ ] Add support for metrics
+- [x] Add better error handling and logs
+- [x] Add support for dynamic gas price
+- [x] Add support for metrics
 
 ## Binaries
 

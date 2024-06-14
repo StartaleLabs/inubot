@@ -1,24 +1,25 @@
-use clap::{Args, Parser, Subcommand};
+use clap::{Args, Parser};
 use eyre::{eyre, OptionExt, Result};
 use figment::{
     providers::{Env, Format, Serialized, Toml},
-    Figment, Provider,
+    Figment,
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, path::PathBuf, time::Duration};
 use tracing::{info, instrument};
 
+use crate::commands::Commands;
+
 #[derive(Debug)]
 pub struct InuConfig {
     global: GlobalOptions,
-    command: Commands,
     mnemonic: String,
     network: Network,
 }
 
 impl InuConfig {
     #[instrument(name = "config_load")]
-    pub fn load() -> Result<Self> {
+    pub fn load() -> Result<(Self, Commands)> {
         let cli = InuCli::parse();
 
         let mut config_file = Figment::new()
@@ -42,7 +43,7 @@ impl InuConfig {
         let mut config_file: InuConfigFile = config_file.extract()?;
 
         // get the network
-        let network = if let Some(name) = cli.network {
+        let mut network = if let Some(name) = cli.network {
             config_file
                 .networks
                 .remove(&name)
@@ -66,17 +67,23 @@ impl InuConfig {
                 .clone()
         };
 
+        if cli.block_time.is_some() {
+            network.block_time = cli.block_time;
+        }
+
         info!(
             "loaded config, globals={:?}, network={:?}, command={:?}",
             config_file.global, network, cli.command
         );
 
-        Ok(Self {
-            global: config_file.global,
-            command: cli.command,
-            mnemonic: config_file.mnemonic,
-            network,
-        })
+        Ok((
+            Self {
+                global: config_file.global,
+                mnemonic: config_file.mnemonic,
+                network,
+            },
+            cli.command,
+        ))
     }
 
     pub fn get_network(&self) -> &Network {
@@ -85,10 +92,6 @@ impl InuConfig {
 
     pub fn get_global(&self) -> &GlobalOptions {
         &self.global
-    }
-
-    pub fn get_command(&self) -> &Commands {
-        &self.command
     }
 
     pub fn get_mnemonic(&self) -> &str {
@@ -153,6 +156,8 @@ struct InuCli {
     rpc_url: Option<String>,
     #[arg(short, long, global = true)]
     network: Option<String>,
+    #[arg(short, long, global = true, value_parser = humantime::parse_duration)]
+    block_time: Option<Duration>,
 
     // global options, flatten
     #[command(flatten)]
@@ -164,12 +169,6 @@ struct InuCli {
     command: Commands,
 }
 
-#[derive(Debug, Serialize, Deserialize, Subcommand)]
-pub enum Commands {
-    Run(RunArgs),
-    Withdraw(RunArgs),
-}
-
 #[derive(Debug, Serialize, Deserialize, Args)]
 struct GlobalArgs {
     #[serde(skip_serializing_if = "Option::is_none", with = "humantime_serde")]
@@ -178,13 +177,4 @@ struct GlobalArgs {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[arg(long, global = true)]
     tps_per_actor: Option<u64>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Args)]
-pub struct RunArgs {
-    #[arg(short, long)]
-    pub max_tps: u32,
-    #[serde(with = "humantime_serde")]
-    #[arg(short, long, value_parser = humantime::parse_duration, default_value = "100years")]
-    pub duration: Duration,
 }

@@ -11,7 +11,7 @@ use std::{
 };
 use tokio::sync::watch;
 use tokio_stream::{wrappers::WatchStream, StreamExt};
-use tracing::{debug, debug_span, trace, trace_span, Instrument};
+use tracing::{info_span, trace, Instrument};
 
 /// Poller task for fetching gas price.
 pub struct GasPricePoller<T> {
@@ -44,7 +44,7 @@ impl<T: Transport + Clone> GasPricePoller<T> {
 
     pub fn spawn(self) -> GasPriceChannel {
         let (tx, rx) = watch::channel(self.init_value);
-        let span = trace_span!("gas_poller");
+        let span = info_span!("gas_poller");
 
         let fut = async move {
             let mut poll_task = self.poll_task.spawn().into_stream().map(|p| p.to::<u128>());

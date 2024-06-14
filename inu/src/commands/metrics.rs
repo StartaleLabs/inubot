@@ -1,13 +1,13 @@
 use alloy::{
     providers::{Provider, ProviderBuilder},
-    rpc::{
-        client::{BuiltInConnectionString, WsConnect},
-        types::eth::Block,
-    },
+    rpc::{client::BuiltInConnectionString, types::eth::Block},
 };
-use clap::Parser;
 use eyre::{eyre, Result};
+use futures::Future;
 use futures_util::StreamExt;
+use tracing::{info, info_span, warn, Instrument};
+
+use crate::cli::Network;
 
 const MAX_BLOCK_GAS_LIMIT: u128 = 30_000_000;
 
@@ -91,7 +91,7 @@ impl ChainStats {
 
     pub fn print_summary(&self) {
         if let Some(block) = &self.last_block {
-            println!(
+            info!(
                 "[Block #{:?}] TPS: (Avg={}, Blk={}), Utilz: (Avg={:.2}, Blk={:.2})",
                 block.header.number.unwrap_or_default(),
                 self.average_tps(),
@@ -105,8 +105,7 @@ impl ChainStats {
 
 /// Build a furture stream to poll the chain for new blocks and update the statistics
 /// NOTE: The Polling put a lot of stress on the node, use with caution
-async fn polling_update(stats: &mut ChainStats, rpc_url: String) -> Result<()> {
-    let provider = ProviderBuilder::new().on_http(rpc_url.parse()?);
+async fn polling_update<P: Provider>(stats: &mut ChainStats, provider: P) -> Result<()> {
     let mut stream = provider
         .watch_blocks()
         .await?
@@ -125,12 +124,8 @@ async fn polling_update(stats: &mut ChainStats, rpc_url: String) -> Result<()> {
 /// Build a future stream to subscribe to new blocks and update the statistics
 /// Only works with Websocket providers
 /// TODO: add support for IBC and other pubsub protocols
-async fn pubsub_update(stats: &mut ChainStats, rpc_url: String) -> Result<()> {
-    // Create a provider.
-    let ws = WsConnect::new(rpc_url);
-    let provider = ProviderBuilder::new().on_ws(ws).await?;
-
-    // // Subscribe to blocks.
+async fn pubsub_update<P: Provider>(stats: &mut ChainStats, provider: P) -> Result<()> {
+    // Subscribe to blocks.
     let subscription = provider.subscribe_blocks().await?;
     let mut stream = subscription.into_stream();
     while let Some(mut block) = stream.next().await {
@@ -147,40 +142,39 @@ async fn pubsub_update(stats: &mut ChainStats, rpc_url: String) -> Result<()> {
     Ok(())
 }
 
-#[derive(Parser, Debug)]
-#[command(version, about, long_about = None)]
-struct Args {
-    #[clap(short, long, required = true, help = "Sets the RPC URL")]
-    rpc_url: String,
-    #[clap(
-        short,
-        long,
-        default_value = "2",
-        help = "Sets the block time in seconds"
-    )]
-    block_time: u64,
-}
-
-#[tokio::main]
-async fn main() -> Result<()> {
-    let Args {
+pub async fn get_poll_metrics_fut(network: &Network) -> Result<impl Future<Output = ()>> {
+    let Network {
         rpc_url,
         block_time,
-    } = Args::parse();
+        ..
+    } = network;
 
+    // default block time is 2 seconds, most op based chains have a 2 second block time
+    let block_time = block_time.map_or(2, |b| b.as_secs());
     let connection: BuiltInConnectionString = rpc_url.parse()?;
+    let provider = ProviderBuilder::new().on_builtin(rpc_url).await?;
     let mut stats = ChainStats::new(block_time);
-    loop {
-        let res = match connection {
-            BuiltInConnectionString::Http(_) => polling_update(&mut stats, rpc_url.clone()).await,
-            BuiltInConnectionString::Ws(_, _) => pubsub_update(&mut stats, rpc_url.clone()).await,
-            _ => Err(eyre!("Unsupported connection type")),
-        };
 
-        match res {
-            Ok(_) => println!("Connection closed. Reconnecting..."),
-            Err(e) => eprintln!("Error: {:?}", e),
+    let span = info_span!("metrics");
+    let fut = async move {
+        loop {
+            let res = match connection {
+                BuiltInConnectionString::Http(_) => {
+                    polling_update(&mut stats, provider.clone()).await
+                }
+                BuiltInConnectionString::Ws(_, _) => {
+                    pubsub_update(&mut stats, provider.clone()).await
+                }
+                _ => Err(eyre!("Unsupported connection type")),
+            };
+
+            match res {
+                Ok(_) => warn!("Reconnecting, connection closed"),
+                Err(e) => warn!("Reconnecting, error: {:?}", e),
+            }
+            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
         }
-        tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-    }
+    };
+
+    Ok(fut.instrument(span))
 }
