@@ -6,7 +6,7 @@ use thiserror::Error;
 use tokio::sync::mpsc;
 use tracing::{debug, info_span, trace, warn, Instrument};
 
-use crate::nonce::{NonceHandle, TxFailContext};
+use crate::actor::nonce::{NonceHandle, TxFailContext};
 
 #[derive(Error, Debug)]
 pub enum InuError {
@@ -62,7 +62,7 @@ impl<P> RateController<P> {
 }
 
 impl<P: Provider + 'static> RateController<P> {
-    async fn handle_new_request(&self, config: SendConfig) {
+    fn handle_new_request(&self, config: SendConfig) {
         let SendConfig {
             encoded_tx,
             gas_price,
@@ -124,22 +124,14 @@ impl<P: Provider + 'static> RateController<P> {
     }
 
     async fn into_future(self, mut ixns: mpsc::Receiver<SendConfig>) {
-        'shutdown: loop {
-            let limiter = DefaultDirectRateLimiter::direct(Quota::per_second(self.max_tps));
-            debug!("loop started");
-            loop {
-                // wait until permitted
-                limiter.until_ready().await;
-
-                // fetch next send request
-                let Some(config) = ixns.recv().await else {
-                    debug!("channel closed");
-                    break 'shutdown;
-                };
-
-                self.handle_new_request(config).await;
-            }
+        let limiter = DefaultDirectRateLimiter::direct(Quota::per_second(self.max_tps));
+        debug!("loop started");
+        while let Some(config) = ixns.recv().await {
+            // wait until permitted
+            limiter.until_ready().await;
+            self.handle_new_request(config);
         }
+        debug!("channel closed");
     }
 
     pub fn spawn(self) -> RateControllerHandle {
