@@ -1,6 +1,7 @@
 use std::{sync::Arc, time::Duration};
 
 use alloy::{
+    hex,
     providers::{Provider, ProviderBuilder},
     signers::wallet::{
         coins_bip39::{English, Mnemonic},
@@ -88,20 +89,20 @@ impl Commands {
                 'main: loop {
                     select! {
                         _ = manager.wait_for_error() => {
-                            manager.shutdown().await;
+                            manager.shutdown(global_agrs.tx_timeout).await;
                             break 'main;
                         }
                         res = signal::ctrl_c() => {
                             if res.is_ok() {
                                 debug!("ctrl-c received!");
-                                manager.shutdown().await;
+                                manager.shutdown(global_agrs.tx_timeout).await;
                                 break 'main;
                             } else {
                                 debug!("failed to receive ctrl-c signal, ignoring..");
                             }
                         }
                         _ = tokio::time::sleep(*duration) => {
-                            manager.shutdown().await;
+                            manager.shutdown(global_agrs.tx_timeout).await;
                             break 'main;
                         }
                     }
@@ -120,7 +121,9 @@ impl Commands {
                 .await?;
 
                 // withraw fund
-                manager.attempt_to_send_funds_back().await
+                manager
+                    .attempt_to_send_funds_back(global_agrs.tx_timeout)
+                    .await
             }
             Commands::Metrics => {
                 get_poll_metrics_fut(network).await?.await;
@@ -135,8 +138,14 @@ impl Commands {
                         .phrase(phrase.to_phrase())
                         .index(i)?
                         .build()?;
+
                     if i == 0 {
-                        info!("(master)Account {}: {}", i, wallet.address());
+                        info!(
+                            "(master)Account {}: {} (pk: 0x{})",
+                            i,
+                            wallet.address(),
+                            hex::encode(wallet.signer().to_bytes())
+                        );
                     } else {
                         info!("Account {}: {}", i, wallet.address());
                     }

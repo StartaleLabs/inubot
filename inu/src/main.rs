@@ -6,9 +6,7 @@ pub mod actor;
 pub mod builder;
 pub mod cli;
 pub mod commands;
-pub mod error;
 pub mod gas_oracle;
-pub mod nonce;
 pub mod rate;
 
 fn setup_tracing() -> Result<()> {

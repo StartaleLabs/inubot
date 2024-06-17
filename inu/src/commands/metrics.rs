@@ -92,7 +92,7 @@ impl ChainStats {
     pub fn print_summary(&self) {
         if let Some(block) = &self.last_block {
             info!(
-                "[Block #{:?}] TPS: (Avg={}, Blk={}), Utilz: (Avg={:.2}, Blk={:.2})",
+                "[Block #{:?}] TPS: (Avg={:.2}, Blk={:.2}), Utilz: (Avg={:.2}, Blk={:.2})",
                 block.header.number.unwrap_or_default(),
                 self.average_tps(),
                 self.block_tps(),

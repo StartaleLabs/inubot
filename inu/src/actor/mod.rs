@@ -1,7 +1,10 @@
 use alloy::{
     eips::eip2718::Encodable2718,
     network::{Ethereum, EthereumSigner, NetworkSigner, TransactionBuilder},
-    primitives::{utils::format_units, Address, U256},
+    primitives::{
+        utils::{format_units, parse_ether},
+        Address, U256,
+    },
     providers::{
         fillers::{ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller, SignerFiller},
         Provider, RootProvider,
@@ -22,12 +25,17 @@ use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, info_span, instrument, Instrument, Level};
 
 use crate::{
+    actor::{
+        error::TxRpcError,
+        nonce::{NonceHandle, NonceManager, TxFailContext},
+    },
     builder::TxBuilder,
-    error::TxRpcError,
     gas_oracle::GasPriceChannel,
-    nonce::{NonceHandle, NonceManager, TxFailContext},
     rate::{RateControllerHandle, SendConfig},
 };
+
+pub mod error;
+pub mod nonce;
 
 // const MAX_TPS_PER_ACTOR: u64 = 50;
 // const ETH_DUST_TO_IGNORE: u128 = 1_000_000_000_000_000; // 0.001 ETH
@@ -142,7 +150,9 @@ impl<P: Provider<BoxTransport>, S: NetworkSigner<Ethereum>> Actor<P, S> {
                 RpcError::ErrorResp(resp) => {
                     // TODO: find and handle other cases
                     match resp.clone().into() {
-                        TxRpcError::NonceTooLow | TxRpcError::AlreadyImported => {
+                        TxRpcError::NonceTooLow
+                        | TxRpcError::AlreadyImported
+                        | TxRpcError::AlreadyKnown => {
                             // nonce is alredy used, skip it and continue
                             // TODO: handle this better
                             debug!("skipping as nonce already imported");
@@ -171,9 +181,7 @@ impl<P: Provider<BoxTransport>, S: NetworkSigner<Ethereum>> Actor<P, S> {
                 }
                 // tricky to handle this case since pending tx timeout also return this error
                 // we rely on the `might_be_timeout` flag to differentiate
-                RpcError::Transport(TransportErrorKind::BackendGone)
-                    if might_be_timeout == true =>
-                {
+                RpcError::Transport(TransportErrorKind::BackendGone) if might_be_timeout => {
                     // nonce might be stucked, increase gas price
                     // use the max of the increased old gas price and the new gas price
                     gas_price = self.apply_gas_multiplier(gas_price.max(old_gas_price));
@@ -195,7 +203,7 @@ impl<P: Provider<BoxTransport>, S: NetworkSigner<Ethereum>> Actor<P, S> {
 
     #[instrument(skip_all, fields(nonce), err(level = Level::ERROR))]
     pub async fn send_tx(&self, timeout: Duration) -> Result<(), ActorError> {
-        let tx = TxBuilder::build(self.address.clone()).with_chain_id(self.chain_id);
+        let tx = TxBuilder::build(self.address).with_chain_id(self.chain_id);
         if let Some((ready_tx, nonce_handle, gas_price)) = self.apply_nonce(tx).await? {
             tracing::Span::current().record("nonce", nonce_handle.get());
 
@@ -265,7 +273,11 @@ impl<P: Provider<BoxTransport>, S: NetworkSigner<Ethereum>> Actor<P, S> {
     // send all the funds to a EOA account
     // NOTE: should not be used with contract address otheriwse gas estimation will be wrong
     #[instrument(skip_all, err(level = Level::ERROR))]
-    pub async fn send_all_funds(&self, to: Address) -> Result<TransactionReceipt> {
+    pub async fn send_all_funds(
+        &self,
+        to: Address,
+        tx_timeout: Duration,
+    ) -> Result<TransactionReceipt> {
         let code = self.provider.get_code_at(to).await?;
         if !code.is_empty() {
             return Err(eyre!("cannot send funds to contract address"));
@@ -275,11 +287,14 @@ impl<P: Provider<BoxTransport>, S: NetworkSigner<Ethereum>> Actor<P, S> {
         let gas_price = self.get_gas_price();
         let gas_limit = 21_000;
         let balance = self.provider.get_balance(self.address).await?;
-        let cost = gas_price * gas_limit;
+        // TODO: take op l1 cost into account
+        // for now just subtract 0.001 eth
+        // let cost = gas_price * gas_limit;
+        let cost = parse_ether("0.001")?;
         let transferrable = balance.saturating_sub(U256::from(cost));
         debug!(
-            "balance: {}, transferrable: {}, cost: {}, nonce: {}",
-            balance, transferrable, cost, nonce
+            "balance: {}, transferrable: {}, cost: {}, nonce: {}, gas_price: {}",
+            balance, transferrable, cost, nonce, gas_price
         );
         if transferrable.is_zero() {
             return Err(eyre!("not enough funds to send"));
@@ -300,9 +315,16 @@ impl<P: Provider<BoxTransport>, S: NetworkSigner<Ethereum>> Actor<P, S> {
             .provider
             .send_raw_transaction(&tx.encoded_2718())
             .await?
-            .with_timeout(Some(Duration::from_secs(6)))
+            .with_timeout(Some(tx_timeout))
             .get_receipt()
-            .await?;
+            .await
+            .map_err(|e| {
+                if matches!(e, RpcError::Transport(TransportErrorKind::BackendGone)) {
+                    eyre!("tx timeout")
+                } else {
+                    e.into()
+                }
+            })?;
 
         Ok(reciept)
     }
@@ -422,7 +444,6 @@ impl ActorManager {
         for actor in self.actors.iter() {
             let cancel_token = self.actor_cancel_token.clone();
             let actor = actor.clone();
-            let tx_timeout = tx_timeout.clone();
             let error_notify = self.actor_error_notify.clone();
             // spawn loop to send tx
 
@@ -434,7 +455,7 @@ impl ActorManager {
                     // to prevent nonce race conditions
                     tokio::select! {
                         biased;
-                        res = actor.send_tx(tx_timeout.clone()) => {
+                        res = actor.send_tx(tx_timeout) => {
                             // if error, notify error and break the loop
                             if let Err(e) = res {
                                 error!("sending shutdown signal, error in tx sending {}", e);
@@ -458,27 +479,27 @@ impl ActorManager {
         self.actor_error_notify.notified().await;
     }
 
-    pub async fn shutdown(&mut self) {
+    pub async fn shutdown(&mut self, tx_timeout: Duration) {
         // cancel all the tasks
         self.actor_cancel_token.cancel();
         // wait for tasks to shutdown
         while self.tasks.join_next().await.is_some() {}
         // attempt to send back all the funds to master account
-        self.attempt_to_send_funds_back().await;
+        self.attempt_to_send_funds_back(tx_timeout).await;
     }
 
-    pub async fn attempt_to_send_funds_back(&self) {
+    pub async fn attempt_to_send_funds_back(&self, tx_timeout: Duration) {
         let handles = self.actors.iter().map(|actor| {
             let actor = actor.clone();
             let master_address = self.master_address;
             let span = info_span!("funds_back", actor = actor.address.to_string());
             let fut = async move {
-                if let Ok(reciept) = actor.send_all_funds(master_address).await {
+                if let Ok(reciept) = actor.send_all_funds(master_address, tx_timeout).await {
                     info!("success, tx hash - {}", reciept.transaction_hash);
                 }
             };
 
-            tokio::spawn(fut.instrument(span))
+            fut.instrument(span)
         });
 
         futures::future::join_all(handles).await;
