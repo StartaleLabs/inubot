@@ -3,15 +3,17 @@ use alloy::{
     rpc::{client::BuiltInConnectionString, types::eth::Block},
 };
 use eyre::{eyre, Result};
-use futures::Future;
+use futures::stream::BoxStream;
 use futures_util::StreamExt;
-use tracing::{info, info_span, warn, Instrument};
+use tokio::sync::watch;
+use tokio_stream::wrappers::WatchStream;
+use tracing::{debug, info_span, warn, Instrument};
 
 use crate::cli::Network;
 
 const MAX_BLOCK_GAS_LIMIT: u128 = 30_000_000;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 struct WelfordMovingAverage {
     count: u128,
     mean: f64,
@@ -32,10 +34,11 @@ impl WelfordMovingAverage {
 }
 
 /// Helper struct to save chain statistics and operate over it
-#[derive(Debug, Default)]
-struct ChainStats {
+#[derive(Debug, Default, Clone)]
+pub struct ChainStats {
     block_time: u64,
     last_block: Option<Block>,
+    last_block_span: Option<u64>,
     tps: WelfordMovingAverage,
     gas_used: WelfordMovingAverage,
 }
@@ -59,6 +62,7 @@ impl ChainStats {
         self.gas_used.update(block.header.gas_used as f64, 1);
 
         self.last_block = Some(block.clone());
+        self.last_block_span = Some(span);
     }
 
     pub fn average_tps(&self) -> f64 {
@@ -71,7 +75,7 @@ impl ChainStats {
 
     pub fn block_tps(&self) -> f64 {
         if let Some(block) = &self.last_block {
-            block.transactions.len() as f64 / self.block_time as f64
+            block.transactions.len() as f64 / self.last_block_span.unwrap_or(self.block_time) as f64
         } else {
             0.0
         }
@@ -89,60 +93,81 @@ impl ChainStats {
         }
     }
 
-    pub fn print_summary(&self) {
-        if let Some(block) = &self.last_block {
-            info!(
-                "[Block #{:?}] TPS: (Avg={:.2}, Blk={:.2}), Utilz: (Avg={:.2}, Blk={:.2})",
-                block.header.number.unwrap_or_default(),
-                self.average_tps(),
-                self.block_tps(),
-                self.average_utilization(),
-                self.block_utlization()
-            );
-        }
+    pub fn get_summary(&self) -> String {
+        self.last_block
+            .as_ref()
+            .map(|block| {
+                format!(
+                    "[Block #{:?}] TPS: (Avg={:.2}, Blk={:.2}), Utilz: (Avg={:.2}, Blk={:.2})",
+                    block.header.number.unwrap_or_default(),
+                    self.average_tps(),
+                    self.block_tps(),
+                    self.average_utilization(),
+                    self.block_utlization()
+                )
+            })
+            .unwrap_or("No data".to_string())
     }
 }
 
-/// Build a furture stream to poll the chain for new blocks and update the statistics
-/// NOTE: The Polling put a lot of stress on the node, use with caution
-async fn polling_update<P: Provider>(stats: &mut ChainStats, provider: P) -> Result<()> {
-    let mut stream = provider
+async fn ws_block_stream<P: Provider + Clone + 'static>(
+    provider: P,
+) -> Result<BoxStream<'static, Result<Block>>> {
+    let subscription = provider.subscribe_blocks().await?.into_stream();
+    Ok(subscription
+        .then(move |b| {
+            let provider_clone = provider.clone();
+            let Some(hash) = b.header.hash else {
+                return futures::future::Either::Right(async { Err(eyre!("no block")) });
+            };
+
+            futures::future::Either::Left(async move {
+                provider_clone
+                    .get_block(hash.into(), true)
+                    .await
+                    .map_err(Into::into)
+                    .and_then(|b| b.ok_or(eyre!("no block")))
+            })
+        })
+        .boxed())
+}
+
+async fn http_block_stream<P: Provider + Clone + 'static>(
+    provider: P,
+) -> Result<BoxStream<'static, Result<Block>>> {
+    let stream = provider
         .watch_blocks()
         .await?
         .into_stream()
         .flat_map(futures_util::stream::iter);
 
-    while let Some(block) = stream.next().await {
-        let block = provider.get_block(block.into(), true).await?.unwrap();
-        stats.update(&block);
-        stats.print_summary();
-    }
-
-    Ok(())
+    Ok(stream
+        .then(move |hash| {
+            let provider_clone = provider.clone();
+            async move {
+                provider_clone
+                    .get_block(hash.into(), true)
+                    .await
+                    .map_err(Into::into)
+                    .and_then(|b| b.ok_or(eyre!("no block")))
+            }
+        })
+        .boxed())
 }
 
-/// Build a future stream to subscribe to new blocks and update the statistics
-/// Only works with Websocket providers
-/// TODO: add support for IBC and other pubsub protocols
-async fn pubsub_update<P: Provider>(stats: &mut ChainStats, provider: P) -> Result<()> {
-    // Subscribe to blocks.
-    let subscription = provider.subscribe_blocks().await?;
-    let mut stream = subscription.into_stream();
-    while let Some(mut block) = stream.next().await {
-        if block.header.hash.is_some() && block.transactions.is_empty() {
-            block = provider
-                .get_block(block.header.hash.unwrap().into(), true)
-                .await?
-                .unwrap();
-        }
-        stats.update(&block);
-        stats.print_summary();
-    }
+async fn block_stream(rpc_url: &str) -> Result<BoxStream<'static, Result<Block>>> {
+    let provider = ProviderBuilder::new().on_builtin(rpc_url).await?;
+    let connection: BuiltInConnectionString = rpc_url.parse()?;
+    let stream = match connection {
+        BuiltInConnectionString::Http(_) => http_block_stream(provider.clone()).await,
+        BuiltInConnectionString::Ws(_, _) => ws_block_stream(provider.clone()).await,
+        _ => Err(eyre!("Unsupported connection type")),
+    };
 
-    Ok(())
+    stream
 }
 
-pub async fn get_poll_metrics_fut(network: &Network) -> Result<impl Future<Output = ()>> {
+pub async fn spwan_metrics_channel(network: Network) -> Result<WatchStream<ChainStats>> {
     let Network {
         rpc_url,
         block_time,
@@ -151,30 +176,29 @@ pub async fn get_poll_metrics_fut(network: &Network) -> Result<impl Future<Outpu
 
     // default block time is 2 seconds, most op based chains have a 2 second block time
     let block_time = block_time.map_or(2, |b| b.as_secs());
-    let connection: BuiltInConnectionString = rpc_url.parse()?;
-    let provider = ProviderBuilder::new().on_builtin(rpc_url).await?;
-    let mut stats = ChainStats::new(block_time);
 
+    // confirm block stream can be produced
+    let _ = block_stream(&rpc_url).await?;
+
+    let (tx, rx) = watch::channel(ChainStats::new(block_time));
     let span = info_span!("metrics");
     let fut = async move {
-        loop {
-            let res = match connection {
-                BuiltInConnectionString::Http(_) => {
-                    polling_update(&mut stats, provider.clone()).await
+        'outer: loop {
+            if let Ok(mut stream) = block_stream(&rpc_url).await {
+                while let Some(Ok(block)) = stream.next().await {
+                    if tx.is_closed() {
+                        debug!("channel closed");
+                        break 'outer;
+                    }
+                    tx.send_modify(|stats: &mut ChainStats| stats.update(&block))
                 }
-                BuiltInConnectionString::Ws(_, _) => {
-                    pubsub_update(&mut stats, provider.clone()).await
-                }
-                _ => Err(eyre!("Unsupported connection type")),
             };
 
-            match res {
-                Ok(_) => warn!("Reconnecting, connection closed"),
-                Err(e) => warn!("Reconnecting, error: {:?}", e),
-            }
+            warn!("Reconnecting in 2s, connection closed");
             tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
         }
     };
 
-    Ok(fut.instrument(span))
+    tokio::spawn(fut.instrument(span));
+    Ok(rx.into())
 }

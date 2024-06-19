@@ -1,4 +1,5 @@
 use alloy::transports::TransportError;
+use tracing::{instrument, trace};
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -59,6 +60,7 @@ impl NonceManagerInner {
         }
     }
 
+    #[instrument(skip(self))]
     async fn next_nonce(&self) -> NonceVal {
         let mut free_lock = self.free_nonces.lock().await;
         // debug!("freed nonces count: {}", free_lock.len());
@@ -66,11 +68,11 @@ impl NonceManagerInner {
         drop(free_lock);
 
         if let Some(nonce) = free_nonce {
-            // debug!("got freed nonce: {}", nonce.get());
+            trace!("got freed nonce: {}", nonce.get());
             nonce
         } else {
             let next_nonce = self.next_nonce.fetch_add(1, Ordering::Relaxed);
-            // debug!("got new nonce: {}", next_nonce);
+            trace!("got new nonce: {}", next_nonce);
             NonceVal::New { val: next_nonce }
         }
     }

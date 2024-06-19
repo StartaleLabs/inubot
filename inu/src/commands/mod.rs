@@ -7,18 +7,18 @@ use alloy::{
         coins_bip39::{English, Mnemonic},
         MnemonicBuilder,
     },
-    transports::utils::Spawnable,
 };
 use clap::{ArgAction, Args, Subcommand};
 use eyre::Result;
-use metrics::get_poll_metrics_fut;
 use serde::{Deserialize, Serialize};
 use tokio::{select, signal};
+use tokio_stream::StreamExt;
 use tracing::{debug, info};
 
 use crate::{
     actor::{ActorManager, RecommendedProvider},
-    cli::InuConfig,
+    cli::{InuConfig, Network},
+    commands::metrics::spwan_metrics_channel,
     gas_oracle::GasPricePoller,
     rate::RateController,
 };
@@ -83,7 +83,7 @@ impl Commands {
 
                 // spawn metrics
                 if *metrics {
-                    get_poll_metrics_fut(network).await?.spawn_task();
+                    spwan_metrics(network.clone()).await?;
                 }
 
                 'main: loop {
@@ -126,7 +126,7 @@ impl Commands {
                     .await
             }
             Commands::Metrics => {
-                get_poll_metrics_fut(network).await?.await;
+                spwan_metrics(network.clone()).await?.await?;
             }
             Commands::Mnemonic => {
                 // Generate a random wallet (24 word phrase)
@@ -185,4 +185,13 @@ async fn setup_manager(
     .await?;
 
     Ok(manager)
+}
+
+async fn spwan_metrics(network: Network) -> Result<tokio::task::JoinHandle<()>> {
+    let mut channel = spwan_metrics_channel(network.clone()).await?;
+    Ok(tokio::spawn(async move {
+        while let Some(stats) = channel.next().await {
+            info!("{}", stats.get_summary());
+        }
+    }))
 }

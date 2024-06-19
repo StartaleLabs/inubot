@@ -135,8 +135,11 @@ impl<P: Provider + 'static> RateController<P> {
     }
 
     pub fn spawn(self) -> RateControllerHandle {
+        // channel size is min(TPS, 64) to handle back pressure
+        //      For TPS < 64, channel size is TPS
+        //      For TPS => 64, channel size is 64
         // TODO: revist channel size, maybe make it configurable
-        let (ix_tx, ixns) = mpsc::channel(64);
+        let (ix_tx, ixns) = mpsc::channel(self.max_tps.get().min(64) as usize);
         let span = info_span!("rate_controller", max_tps = %self.max_tps);
 
         self.into_future(ixns).instrument(span).spawn_task();
