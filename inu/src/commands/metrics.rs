@@ -1,6 +1,9 @@
 use alloy::{
     providers::{Provider, ProviderBuilder},
-    rpc::{client::BuiltInConnectionString, types::eth::Block},
+    rpc::{
+        client::BuiltInConnectionString,
+        types::{eth::Block, BlockTransactionsKind},
+    },
 };
 use eyre::{eyre, Result};
 use futures::stream::BoxStream;
@@ -123,7 +126,7 @@ async fn ws_block_stream<P: Provider + Clone + 'static>(
 
             futures::future::Either::Left(async move {
                 provider_clone
-                    .get_block(hash.into(), true)
+                    .get_block(hash.into(), BlockTransactionsKind::Full)
                     .await
                     .map_err(Into::into)
                     .and_then(|b| b.ok_or(eyre!("no block")))
@@ -146,7 +149,7 @@ async fn http_block_stream<P: Provider + Clone + 'static>(
             let provider_clone = provider.clone();
             async move {
                 provider_clone
-                    .get_block(hash.into(), true)
+                    .get_block(hash.into(), BlockTransactionsKind::Full)
                     .await
                     .map_err(Into::into)
                     .and_then(|b| b.ok_or(eyre!("no block")))

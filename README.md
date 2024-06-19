@@ -1,4 +1,4 @@
-# InuBot - WIP
+# InuBot
 
 Produce fixed TPS stress for a EVM RPC compatible chain.
 

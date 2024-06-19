@@ -3,7 +3,7 @@ use std::{sync::Arc, time::Duration};
 use alloy::{
     hex,
     providers::{Provider, ProviderBuilder},
-    signers::wallet::{
+    signers::local::{
         coins_bip39::{English, Mnemonic},
         MnemonicBuilder,
     },
@@ -144,7 +144,7 @@ impl Commands {
                             "(master)Account {}: {} (pk: 0x{})",
                             i,
                             wallet.address(),
-                            hex::encode(wallet.signer().to_bytes())
+                            hex::encode(wallet.credential().to_bytes())
                         );
                     } else {
                         info!("Account {}: {}", i, wallet.address());

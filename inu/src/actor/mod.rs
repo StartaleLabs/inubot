@@ -1,19 +1,19 @@
 use alloy::{
     eips::eip2718::Encodable2718,
-    network::{Ethereum, EthereumSigner, NetworkSigner, TransactionBuilder},
+    network::{Ethereum, EthereumWallet, NetworkWallet, TransactionBuilder},
     primitives::{
         utils::{format_units, parse_ether},
         Address, U256,
     },
     providers::{
-        fillers::{ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller, SignerFiller},
+        fillers::{ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller, WalletFiller},
         Provider, RootProvider,
     },
     rpc::{
         json_rpc::{ErrorPayload, RpcError},
         types::eth::{TransactionReceipt, TransactionRequest},
     },
-    signers::wallet::{coins_bip39::English, MnemonicBuilder},
+    signers::local::{coins_bip39::English, MnemonicBuilder},
     transports::{BoxTransport, TransportError, TransportErrorKind},
 };
 use eyre::{eyre, Result};
@@ -53,7 +53,7 @@ pub type RecommendedProviderWithSigner = FillProvider<
             JoinFill<JoinFill<alloy::providers::Identity, GasFiller>, NonceFiller>,
             ChainIdFiller,
         >,
-        SignerFiller<EthereumSigner>,
+        WalletFiller<EthereumWallet>,
     >,
     RootProvider<BoxTransport>,
     BoxTransport,
@@ -100,7 +100,7 @@ impl<P, S> Actor<P, S> {
     }
 }
 
-impl<P: Provider<BoxTransport>, S: NetworkSigner<Ethereum>> Actor<P, S> {
+impl<P: Provider<BoxTransport>, S: NetworkWallet<Ethereum>> Actor<P, S> {
     pub async fn new(
         address: Address,
         gas_oracle: GasPriceChannel,
@@ -331,7 +331,7 @@ impl<P: Provider<BoxTransport>, S: NetworkSigner<Ethereum>> Actor<P, S> {
 }
 
 pub struct ActorManager {
-    actors: Vec<Arc<Actor<RecommendedProviderWithSigner, EthereumSigner>>>,
+    actors: Vec<Arc<Actor<RecommendedProviderWithSigner, EthereumWallet>>>,
     provider: Arc<RecommendedProviderWithSigner>,
     master_address: Address,
     tasks: JoinSet<()>,
@@ -353,8 +353,8 @@ impl ActorManager {
         let num_actors = estimate_actors_count(max_tps, tps_per_actor);
         // first account is master account and only used to topup other actors
         let (signer, master_address, actor_addresses) = build_signer(phrase, num_actors).await?;
-        let provider = Arc::new(provider.join_with(SignerFiller::new(signer.clone())));
-        let signer: Arc<EthereumSigner> = Arc::new(signer);
+        let provider = Arc::new(provider.join_with(WalletFiller::new(signer.clone())));
+        let signer: Arc<EthereumWallet> = Arc::new(signer);
 
         info!(
             "master address: {}, actors: {:?}",
@@ -513,7 +513,7 @@ impl ActorManager {
 async fn build_signer(
     phrase: &str,
     num_actors: u32,
-) -> Result<(EthereumSigner, Address, Vec<Address>)> {
+) -> Result<(EthereumWallet, Address, Vec<Address>)> {
     let master = MnemonicBuilder::<English>::default()
         .phrase(phrase)
         .index(0)
@@ -521,7 +521,7 @@ async fn build_signer(
         .build()?;
     let master_address = master.address();
     let mut actor_address = vec![];
-    let mut signer = EthereumSigner::new(master);
+    let mut signer = EthereumWallet::new(master);
 
     for i in 1..(num_actors + 1) {
         let wallet = MnemonicBuilder::<English>::default()
