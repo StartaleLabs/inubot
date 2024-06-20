@@ -1,0 +1,21 @@
+tx_timeout = "15s"
+tps_per_actor = 50
+gas_multiplier = 1.5
+
+# [transactions]
+# Transfer = 0.25
+# ERC20Mint = 0.125
+# ERC721Mint = 0.125
+# ERC1155Deploy = 0.125
+# ERC20Deploy = 0.125
+# ERC1155Mint = 0.125
+# ERC721Deploy = 0.125
+
+[networks.local2]
+block_time = "1s"
+rpc_url = "ws://localhost:12345"
+organic_address = "0x9f7ddec24dd21b41d3cc87330f860e4d8dad10ed"
+default = true
+
+[networks.local]
+rpc_url = "ws://localhost:8545"
