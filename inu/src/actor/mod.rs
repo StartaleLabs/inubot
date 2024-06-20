@@ -40,9 +40,7 @@ use crate::{
 pub mod error;
 pub mod nonce;
 
-// const MAX_TPS_PER_ACTOR: u64 = 50;
-// const ETH_DUST_TO_IGNORE: u128 = 1_000_000_000_000_000; // 0.001 ETH
-
+/// A Provider with all the necessary fillers for sending transactions except the wallet
 pub type RecommendedProvider = FillProvider<
     JoinFill<JoinFill<JoinFill<alloy::providers::Identity, GasFiller>, NonceFiller>, ChainIdFiller>,
     RootProvider<BoxTransport>,
@@ -50,7 +48,8 @@ pub type RecommendedProvider = FillProvider<
     Ethereum,
 >;
 
-pub type RecommendedProviderWithSigner = FillProvider<
+/// A Provider with all the necessary fillers for sending transactions
+pub type RecommendedProviderWithWallet = FillProvider<
     JoinFill<
         JoinFill<
             JoinFill<JoinFill<alloy::providers::Identity, GasFiller>, NonceFiller>,
@@ -64,7 +63,7 @@ pub type RecommendedProviderWithSigner = FillProvider<
 >;
 
 #[derive(Debug, Error)]
-pub enum ActorError {
+pub enum InuActorError {
     /// Low funds
     #[error("Not enough funds on actor {} with current balance {}, rpc response - {}", .actor_address, .balance, .resp)]
     NotSufficentFunds {
@@ -82,11 +81,15 @@ pub enum ActorError {
     OtherError(#[from] eyre::Report),
 }
 
+/// Actor is entity controlling a single address and managing it's nonce
 pub struct Actor<P, S> {
+    /// Address of the actor
     address: Address,
     chain_id: u64,
+    /// Nonce manager
     nonce_manager: NonceManager,
     gas_oracle: GasPriceChannel,
+    /// gas multiplier to apply on gas price
     gas_multiplier: f64,
     provider: Arc<P>,
     signer: Arc<S>,
@@ -99,6 +102,7 @@ impl<P, S> Actor<P, S> {
         (gas_price as f64 * self.gas_multiplier) as u128
     }
 
+    /// Get the gas price with the applied multiplier
     fn get_gas_price(&self) -> u128 {
         self.apply_gas_multiplier(*self.gas_oracle.borrow())
     }
@@ -130,11 +134,14 @@ impl<P: Provider<BoxTransport>, S: NetworkWallet<Ethereum>> Actor<P, S> {
         })
     }
 
+    /// Fetch the next nonce & gas and apply it to to the transaction
+    ///
+    /// Handle all the cases where nonce is errored, might be stucked or gas price needs to be increased
     #[instrument(skip_all, fields(nonce), err(level = Level::ERROR))]
     async fn apply_nonce(
         &self,
         mut transaction: TransactionRequest,
-    ) -> Result<Option<(TransactionRequest, NonceHandle, u128)>, ActorError> {
+    ) -> Result<Option<(TransactionRequest, NonceHandle, u128)>, InuActorError> {
         let (nonce_handle, failed_context) = self
             .nonce_manager
             .next_nonce()
@@ -146,6 +153,7 @@ impl<P: Provider<BoxTransport>, S: NetworkWallet<Ethereum>> Actor<P, S> {
 
         tracing::Span::current().record("nonce", nonce);
 
+        // if nonce is failed, handle the error
         if let Some(TxFailContext {
             gas_price: old_gas_price,
             might_be_timeout,
@@ -172,7 +180,7 @@ impl<P: Provider<BoxTransport>, S: NetworkWallet<Ethereum>> Actor<P, S> {
                             );
                         }
                         TxRpcError::InsufficientFunds => {
-                            return Err(ActorError::NotSufficentFunds {
+                            return Err(InuActorError::NotSufficentFunds {
                                 resp,
                                 actor_address: self.address,
                                 balance: self.provider.get_balance(self.address).await?,
@@ -181,7 +189,7 @@ impl<P: Provider<BoxTransport>, S: NetworkWallet<Ethereum>> Actor<P, S> {
                         TxRpcError::Other { .. } => {
                             // TODO: we return error for now to identify cases that are not handled
                             //       once we cover enough, this should be removed
-                            return Err(ActorError::UnhandledRpcError(resp));
+                            return Err(InuActorError::UnhandledRpcError(resp));
                         }
                     }
                 }
@@ -207,19 +215,24 @@ impl<P: Provider<BoxTransport>, S: NetworkWallet<Ethereum>> Actor<P, S> {
         Ok(Some((transaction, nonce_handle, gas_price)))
     }
 
+    /// Send a new random transaction with the given timeout to rate controller
     #[instrument(skip_all, fields(nonce), err(level = Level::ERROR))]
-    pub async fn send_tx(&self, timeout: Duration) -> Result<(), ActorError> {
+    pub async fn send_tx(&self, timeout: Duration) -> Result<(), InuActorError> {
+        // fetch the random transaction
         let tx = self
             .tx_builder
             .random(self.address)
             .with_chain_id(self.chain_id);
+
+        // apply the nonce and gas price
         if let Some((ready_tx, nonce_handle, gas_price)) = self.apply_nonce(tx).await? {
             tracing::Span::current().record("nonce", nonce_handle.get());
 
+            // encode the signed tx
             let encoded_tx = ready_tx
                 .build(&*self.signer)
                 .await
-                .map_err(|e| ActorError::OtherError(e.into()))?
+                .map_err(|e| InuActorError::OtherError(e.into()))?
                 .encoded_2718();
 
             let config = SendConfig {
@@ -239,6 +252,8 @@ impl<P: Provider<BoxTransport>, S: NetworkWallet<Ethereum>> Actor<P, S> {
         Ok(())
     }
 
+    /// Wait for offchain nonce to match onchain nonce.
+    /// This is used to wait for pending tx to clear
     #[instrument(skip_all)]
     async fn wait_for_pending_tx(&self) -> Result<()> {
         loop {
@@ -260,27 +275,14 @@ impl<P: Provider<BoxTransport>, S: NetworkWallet<Ethereum>> Actor<P, S> {
 
     #[instrument(skip_all, fields(timeout=humantime::format_duration(pending_timeout).to_string()), err(level = Level::ERROR))]
     pub async fn cleanup_nonce(&self, pending_timeout: Duration) -> Result<()> {
-        // sleep till nonce timout gets freed in nonce manager
-        // after this
-        // WIP: to be completed
         debug!("waiting for pending tx to clear till timeout...",);
-
-        let res = time::timeout(pending_timeout, self.wait_for_pending_tx()).await;
-        if let Ok(Ok(_)) = &res {
-            // if onchain & offchain nonce matched within timeout then we are sure nonces are good!
-            return Ok(());
-        }
-
-        // if we are here then it means account nonce might be stuck
-        // Strategy: we pop the freed/errored nonces and re-send them untill we reach the
-        // nonce that maybe not be stuck (not timeout and not underpriced error)
-        // WIP: to be completed
-
+        let _ = time::timeout(pending_timeout, self.wait_for_pending_tx()).await;
         Ok(())
     }
 
-    // send all the funds to a EOA account
-    // NOTE: should not be used with contract address otheriwse gas estimation will be wrong
+    /// send all the funds to a EOA account
+    ///
+    /// NOTE: should not be used with contract address otheriwse gas estimation will be wrong
     #[instrument(skip_all, err(level = Level::ERROR))]
     pub async fn send_all_funds(
         &self,
@@ -339,9 +341,10 @@ impl<P: Provider<BoxTransport>, S: NetworkWallet<Ethereum>> Actor<P, S> {
     }
 }
 
+/// A Manager to orchestrate multiple actors and their funds
 pub struct ActorManager {
-    actors: Vec<Arc<Actor<RecommendedProviderWithSigner, EthereumWallet>>>,
-    provider: Arc<RecommendedProviderWithSigner>,
+    actors: Vec<Arc<Actor<RecommendedProviderWithWallet, EthereumWallet>>>,
+    provider: Arc<RecommendedProviderWithWallet>,
     master_address: Address,
     tasks: JoinSet<()>,
     actor_cancel_token: CancellationToken,
@@ -349,7 +352,10 @@ pub struct ActorManager {
 }
 
 impl ActorManager {
-    #[instrument(name = "manager::new", skip(phrase, provider, rate_handle, gas_oracle, tx_builder))]
+    #[instrument(
+        name = "manager::new",
+        skip(phrase, provider, rate_handle, gas_oracle, tx_builder)
+    )]
     pub async fn new(
         phrase: &str,
         max_tps: u32,
@@ -418,7 +424,10 @@ impl ActorManager {
         Ok(manager)
     }
 
-    /// topup all the actors with some eth
+    /// Topup all the actors with some eth
+    ///
+    /// This will send equal amount of eth to all actors from master account
+    /// while retaining equal part in master account
     #[instrument(skip(self), err)]
     pub async fn fund_actors(&self) -> Result<()> {
         let master_balance = self.provider.get_balance(self.master_address).await?;
@@ -452,19 +461,19 @@ impl ActorManager {
         Ok(())
     }
 
+    /// Spwan the actors tasks to start sending tx
     pub fn spawn_actors(&mut self, tx_timeout: Duration) {
         for actor in self.actors.iter() {
             let cancel_token = self.actor_cancel_token.clone();
             let actor = actor.clone();
             let error_notify = self.actor_error_notify.clone();
-            // spawn loop to send tx
 
             let span = info_span!("actor_task", actor = actor.address.to_string());
             let fut = async move {
                 info!("spawned");
                 'shutdown: loop {
                     // biased select to prioritize tx send over shutdown signal
-                    // to prevent nonce race conditions
+                    // to prevent race conditions
                     tokio::select! {
                         biased;
                         res = actor.send_tx(tx_timeout) => {
@@ -487,10 +496,13 @@ impl ActorManager {
         }
     }
 
+    /// Wait for error notification from actors
     pub async fn wait_for_error(&self) {
         self.actor_error_notify.notified().await;
     }
 
+    /// Teardown the actors tasks and peform cleanup,
+    /// send back all the funds to master account
     pub async fn shutdown(&mut self, tx_timeout: Duration) {
         // cancel all the tasks
         self.actor_cancel_token.cancel();
@@ -500,6 +512,8 @@ impl ActorManager {
         self.attempt_to_send_funds_back(tx_timeout).await;
     }
 
+    /// Attempt to send all the funds back to master account, 
+    /// errors are logged and ignored
     pub async fn attempt_to_send_funds_back(&self, tx_timeout: Duration) {
         let handles = self.actors.iter().map(|actor| {
             let actor = actor.clone();
@@ -518,11 +532,7 @@ impl ActorManager {
     }
 }
 
-///
-/// Utlilty functions
-///
-///
-
+/// Get the master (index 0) signer from the phrase
 pub fn build_master_signer(phrase: &str) -> Result<LocalSigner<SigningKey>> {
     MnemonicBuilder::<English>::default()
         .phrase(phrase)
@@ -531,6 +541,7 @@ pub fn build_master_signer(phrase: &str) -> Result<LocalSigner<SigningKey>> {
         .map_err(Into::into)
 }
 
+/// Get the wallet with master (index 0) and actors signers along with their address from the phrase
 fn build_wallet(phrase: &str, num_actors: u32) -> Result<(EthereumWallet, Address, Vec<Address>)> {
     let master = build_master_signer(phrase)?;
     let master_address = master.address();

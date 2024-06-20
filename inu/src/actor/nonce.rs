@@ -1,10 +1,11 @@
 use alloy::transports::TransportError;
-use tracing::{instrument, trace};
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tracing::{instrument, trace};
 
+/// Context for a failed transaction
 #[derive(Debug)]
 pub struct TxFailContext {
     pub gas_price: u128,
@@ -63,7 +64,6 @@ impl NonceManagerInner {
     #[instrument(skip(self))]
     async fn next_nonce(&self) -> NonceVal {
         let mut free_lock = self.free_nonces.lock().await;
-        // debug!("freed nonces count: {}", free_lock.len());
         let free_nonce = free_lock.pop_first();
         drop(free_lock);
 
@@ -123,9 +123,48 @@ impl NonceHandle {
     }
 }
 
+/// Nonce manager which keeps tracks of failed nonces and provides lowest
+/// available nonce
+///
+/// The NonceManager is responsible for managing the allocation and deallocation
+/// of nonces, which are used to ensure proper nonce management. It maintains a set
+/// of free nonces and provides the next available nonce when requested. If a transaction
+/// fails, the failed nonce can be freed with error info and can be reused in the future.
+///
+/// The NonceManager consists of two main components:
+/// - `NonceManagerInner`: This struct represents the inner state of the Nonce Manager and contains the logic for allocating and freeing nonces.
+/// - `NonceHandle`: This struct represents a handle to a nonce and provides methods for marking a nonce as failed and freeing a nonce.
+///
+/// Example usage:
+/// ```
+/// use inu::actor::nonce::{NonceManager, TxFailContext};
+/// use alloy::transports::TransportErrorKind;
+/// use tokio::task::spawn;
+///
+/// #[tokio::main]
+/// async fn main() {
+///     let manager = NonceManager::new(0);
+///     let nonce1 = manager.next_nonce().await;
+///     let nonce2 = manager.next_nonce().await;
+///     
+///     // Mark nonce2 as failed
+///     nonce2.failed(TxFailContext {
+///         gas_price: 100,
+///         might_be_timeout: false,
+///         error: TransportErrorKind::backend_gone(),
+///     }).free().await;
+///     
+///     // Free nonce1
+///     nonce1.free().await;
+///     
+///     // Get the next available nonce
+///     let nonce3 = manager.next_nonce().await;
+///     
+///     println!("Nonce 3: {}", nonce3.get());
+/// }
+/// ```
 #[derive(Debug, Clone)]
 pub struct NonceManager(Arc<NonceManagerInner>);
-
 impl NonceManager {
     pub fn new(initial_nonce: u64) -> Self {
         Self(Arc::new(NonceManagerInner::new(initial_nonce)))
@@ -143,20 +182,8 @@ impl NonceManager {
         }
     }
 
-    pub async fn freed_count(&self) -> usize {
-        self.inner().free_nonces.lock().await.len()
-    }
-
     pub fn head(&self) -> u64 {
         self.inner().head()
-    }
-
-    pub async fn pop_freed(&self) -> Option<NonceHandle> {
-        let mut free_lock = self.inner().free_nonces.lock().await;
-        free_lock.pop_first().map(|val| NonceHandle {
-            val,
-            manager: self.inner().clone(),
-        })
     }
 }
 

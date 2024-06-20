@@ -1,8 +1,11 @@
 [package]
 name = "inu"
 version = "0.1.0"
-edition = "2021"
 description = "A simple stress bot for producing organic load on EVM network."
+edition = { workspace = true }
+authors = { workspace = true }
+repository = { workspace = true }
+license = { workspace = true }
 
 [dependencies]
 alloy = { workspace = true }

@@ -16,14 +16,14 @@ use crate::cli::Network;
 
 const MAX_BLOCK_GAS_LIMIT: u128 = 30_000_000;
 
+/// Welford stable single pass weighted moving average implementation.
+/// https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Online
 #[derive(Debug, Default, Clone)]
 struct WelfordMovingAverage {
     count: u128,
     mean: f64,
 }
 
-/// Welford stable single pass weighted moving average implementation.
-/// https://en.wikipedia.org/wiki/Algorithms_for_calculating_variance#Online
 impl WelfordMovingAverage {
     fn update(&mut self, sum: f64, span: u64) {
         self.count += span as u128;
@@ -113,6 +113,7 @@ impl ChainStats {
     }
 }
 
+/// Stream blocks from the ws provider
 async fn ws_block_stream<P: Provider + Clone + 'static>(
     provider: P,
 ) -> Result<BoxStream<'static, Result<Block>>> {
@@ -135,6 +136,7 @@ async fn ws_block_stream<P: Provider + Clone + 'static>(
         .boxed())
 }
 
+/// Poll blocks from the http provider
 async fn http_block_stream<P: Provider + Clone + 'static>(
     provider: P,
 ) -> Result<BoxStream<'static, Result<Block>>> {
@@ -158,6 +160,7 @@ async fn http_block_stream<P: Provider + Clone + 'static>(
         .boxed())
 }
 
+/// Create a block stream from the rpc url
 async fn block_stream(rpc_url: &str) -> Result<BoxStream<'static, Result<Block>>> {
     let provider = ProviderBuilder::new().on_builtin(rpc_url).await?;
     let connection: BuiltInConnectionString = rpc_url.parse()?;
@@ -168,6 +171,9 @@ async fn block_stream(rpc_url: &str) -> Result<BoxStream<'static, Result<Block>>
     }
 }
 
+/// Spwan the metrics stream which is updated on new blocks
+///
+/// On network error, it will try to reconnect after 2 seconds
 pub async fn spwan_metrics_channel(network: Network) -> Result<WatchStream<ChainStats>> {
     let Network {
         rpc_url,

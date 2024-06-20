@@ -8,8 +8,9 @@ use tracing::{debug, info_span, trace, warn, Instrument};
 
 use crate::actor::nonce::{NonceHandle, TxFailContext};
 
+/// Error encountered while processing a send request.
 #[derive(Error, Debug)]
-pub enum InuError {
+pub enum InuRateError {
     #[error("tx is missing nonce")]
     NonceMissing,
     #[error("from is missing from tx")]
@@ -19,20 +20,32 @@ pub enum InuError {
     #[error("network signer does not have key for {0} address")]
     SignerMissing(Address),
 }
+
+/// Configuration for sending a transaction via rate controller
 pub struct SendConfig {
+    /// Address of the sender, just for tracing purpose
     pub from: Address,
+    /// encoded signed tx to send
     pub encoded_tx: Vec<u8>,
+    /// gas price of the tx, just for tracing purpose
     pub gas_price: u128,
+    /// nonce handle of the tx nonce, to free the nonce in case of error
     pub nonce_handle: NonceHandle,
+    /// timeout for the tx
     pub timeout: Duration,
 }
 
+/// Handle to send a transaction via rate controller
 #[derive(Debug, Clone)]
 pub struct RateControllerHandle {
     tx: mpsc::Sender<SendConfig>,
 }
 
 impl RateControllerHandle {
+    /// Send a transaction to the rate controller for processing
+    ///
+    /// The call will wait if the rate controller's channel is full
+    /// and return only when the config is successfully sent to the rate controller
     pub async fn send_tx(&self, config: SendConfig) -> Result<(), SendConfig> {
         match self.tx.send(config).await {
             Ok(_) => Ok(()),
@@ -41,12 +54,18 @@ impl RateControllerHandle {
     }
 }
 
+/// A simple governor based rate controller for sending transactions
+///
+/// The rate controller will send transactions at a rate of `max_tps` transactions per second
+/// and handle the tx for enitre lifecycle, freeing nonce if tx fails
 pub struct RateController<P> {
     provider: Arc<P>,
     max_tps: NonZeroU32,
 }
 
 impl<P> RateController<P> {
+    /// Create a new rate controller with the given provider
+    /// with default TPS of 1
     pub fn new(provider: Arc<P>) -> Self {
         Self {
             provider,
@@ -62,6 +81,8 @@ impl<P> RateController<P> {
 }
 
 impl<P: Provider + 'static> RateController<P> {
+    /// Handle a new send request by spwaning a new tokio task,
+    /// It does not wait for the task to complete
     fn handle_new_request(&self, config: SendConfig) {
         let SendConfig {
             encoded_tx,
@@ -84,15 +105,17 @@ impl<P: Provider + 'static> RateController<P> {
         // be sent before the lower nonce
         let provider_clone = self.provider.clone();
         let fut = async move {
+            // broadcast the tx via provider
             match provider_clone.send_raw_transaction(&encoded_tx).await {
-                // if succeeded, spawn a task to wait for receipt
+                // if succeeded, wait for the receipt
                 Ok(pending) => {
-                    // free the nonce if error, assuming tx is stuck
-                    // TODO: better error handling
                     match pending.with_timeout(Some(timeout)).get_receipt().await {
+                        // tx was successful
                         Ok(receipt) => {
                             trace!("tx succesful: {}", receipt.transaction_hash);
                         }
+                        // waiting for reciept failed, it can be due to timeout
+                        // free the nonce and mark it as timeout
                         Err(error) => {
                             warn!("nonce freed with timeout, error waiting tx: {:?}", error);
                             nonce_handle

@@ -1,7 +1,12 @@
 [workspace]
 members = ["inu"]
 resolver = "2"
-package.license = "MIT"
+
+[workspace.package]
+license = "MIT"
+edition = "2021"
+repository = "https://github.com/AstarNetwork/inubot"
+authors = ["Startale"]
 
 [workspace.dependencies]
 serde = "1.0.202"

@@ -62,6 +62,7 @@ impl<T: Transport + Clone> GasPricePoller<T> {
     }
 }
 
+/// Channel for receiving gas price updates.
 #[derive(Debug, Clone)]
 pub struct GasPriceChannel {
     rx: watch::Receiver<u128>,
