@@ -10,7 +10,8 @@ use alloy::{
 };
 use eyre::Result;
 use rand::distributions::{Distribution, WeightedIndex};
-use tracing::instrument;
+use serde::{Deserialize, Serialize};
+use tracing::{info, instrument};
 
 sol!(
     #[sol(rpc)]
@@ -43,12 +44,14 @@ impl TransactionRandomizerBuilder {
         self
     }
 
+    #[instrument(name = "build_tx_randomizer", skip_all)]
     pub async fn build<P: Provider>(self, provider: P) -> Result<TransactionRandomizer> {
         let orgainc_address = {
             if let Some(organic_address) = self.organic_address {
                 organic_address
             } else {
                 let organic = Organic::deploy(provider).await?;
+                info!("organic contract deployed at: {}", organic.address());
                 organic.address().clone()
             }
         };
@@ -89,7 +92,7 @@ impl TransactionRandomizer {
     }
 }
 
-#[derive(Copy, Clone, Debug, Hash, Eq, PartialEq)]
+#[derive(Copy, Clone, Debug, Hash, Eq, PartialEq, Serialize, Deserialize)]
 pub enum OrganicTransaction {
     Transfer,
     // erc20

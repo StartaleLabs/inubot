@@ -349,7 +349,7 @@ pub struct ActorManager {
 }
 
 impl ActorManager {
-    #[instrument(name = "manager::new", skip(phrase, provider, rate_handle, gas_oracle))]
+    #[instrument(name = "manager::new", skip(phrase, provider, rate_handle, gas_oracle, tx_builder))]
     pub async fn new(
         phrase: &str,
         max_tps: u32,

@@ -9,13 +9,14 @@ use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, path::PathBuf, time::Duration};
 use tracing::{info, instrument};
 
-use crate::commands::Commands;
+use crate::{builder::OrganicTransaction, commands::Commands};
 
 #[derive(Debug)]
 pub struct InuConfig {
     global: GlobalOptions,
     mnemonic: String,
     network: Network,
+    transactions: HashMap<OrganicTransaction, f64>,
 }
 
 impl InuConfig {
@@ -30,7 +31,6 @@ impl InuConfig {
             .merge(Env::prefixed("INU_").split("_"));
 
         // Add configuration from file if specified
-
         if let Some(config_path) = &cli.config {
             config_file = config_file.merge(Toml::file(config_path));
         } else {
@@ -73,15 +73,20 @@ impl InuConfig {
             network.block_time = cli.block_time;
         }
 
+        if config_file.transactions.is_empty() {
+            config_file.transactions = default_transaction_probablities();
+        }
+
         info!(
-            "loaded config, globals={:?}, network={:?}, command={:?}",
-            config_file.global, network, cli.command
+            "loaded config, globals={:?}, network={:?}, transactions={:?}, command={:?}, ",
+            config_file.global, network, config_file.transactions, cli.command,
         );
 
         Ok((
             Self {
                 global: config_file.global,
                 mnemonic: config_file.mnemonic,
+                transactions: config_file.transactions,
                 network,
             },
             cli.command,
@@ -99,6 +104,10 @@ impl InuConfig {
     pub fn get_mnemonic(&self) -> &str {
         &self.mnemonic
     }
+
+    pub fn get_tx_probabilities(&self) -> &HashMap<OrganicTransaction, f64> {
+        &self.transactions
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Default)]
@@ -106,10 +115,24 @@ struct InuConfigFile {
     #[serde(flatten)]
     global: GlobalOptions,
     networks: HashMap<String, Network>,
+    transactions: HashMap<OrganicTransaction, f64>,
     // the mnemonic is only palceholder here and only to be fetch from env
     // this is not serialised
     #[serde(skip_serializing)]
     mnemonic: String,
+}
+
+fn default_transaction_probablities() -> HashMap<OrganicTransaction, f64> {
+    [
+        (OrganicTransaction::Transfer, 0.125 * 2.0),
+        (OrganicTransaction::ERC20Deploy, 0.125),
+        (OrganicTransaction::ERC20Mint, 0.125),
+        (OrganicTransaction::ERC721Deploy, 0.125),
+        (OrganicTransaction::ERC721Mint, 0.125),
+        (OrganicTransaction::ERC1155Deploy, 0.125),
+        (OrganicTransaction::ERC1155Mint, 0.125),
+    ]
+    .into()
 }
 
 #[derive(Debug, Serialize, Deserialize)]

@@ -1,4 +1,4 @@
-use std::{sync::Arc, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 use alloy::{
     hex,
@@ -19,7 +19,7 @@ use tracing::{debug, info};
 
 use crate::{
     actor::{build_master_signer, ActorManager, RecommendedProvider},
-    builder::{OrganicTransaction, TransactionRandomizerBuilder},
+    builder::{Organic, OrganicTransaction, TransactionRandomizerBuilder},
     cli::{InuConfig, Network},
     commands::metrics::spwan_metrics_channel,
     gas_oracle::GasPricePoller,
@@ -51,6 +51,7 @@ pub enum Commands {
     Withdraw(WithdrawArgs),
     Metrics,
     Mnemonic,
+    Deploy,
 }
 
 impl Commands {
@@ -77,6 +78,7 @@ impl Commands {
                     global_agrs.tps_per_actor,
                     global_agrs.gas_multiplier,
                     network.organic_address,
+                    config.get_tx_probabilities().clone(),
                     config.get_mnemonic(),
                 )
                 .await?;
@@ -126,6 +128,7 @@ impl Commands {
                         // just to prevent the deployment of organic contract we use zero address
                         Some(Address::ZERO),
                     ),
+                    config.get_tx_probabilities().clone(),
                     config.get_mnemonic(),
                 )
                 .await?;
@@ -161,6 +164,19 @@ impl Commands {
                     }
                 }
             }
+            Commands::Deploy => {
+                let master = build_master_signer(config.get_mnemonic())?;
+                info!(
+                    "deploying organic contract with master account - {}",
+                    master.address()
+                );
+                let provider = provider
+                    .clone()
+                    .join_with(WalletFiller::<EthereumWallet>::new(master.into()));
+
+                let organic = Organic::deploy(provider).await?;
+                info!("organic contract deployed at: {}", organic.address());
+            }
         }
         Ok(())
     }
@@ -172,6 +188,7 @@ async fn setup_manager(
     tps_per_actor: u32,
     gas_multiplier: f64,
     organic_address: Option<Address>,
+    tx_probabilities: HashMap<OrganicTransaction, f64>,
     phrase: &str,
 ) -> Result<ActorManager> {
     let provider_shared = Arc::new(provider.clone());
@@ -186,13 +203,7 @@ async fn setup_manager(
         .spawn();
 
     let randomizer = TransactionRandomizerBuilder::new(organic_address)
-        .with_tx(OrganicTransaction::Transfer, 0.125 * 2.0)
-        .with_tx(OrganicTransaction::ERC20Deploy, 0.125)
-        .with_tx(OrganicTransaction::ERC20Mint, 0.125)
-        .with_tx(OrganicTransaction::ERC721Deploy, 0.125)
-        .with_tx(OrganicTransaction::ERC721Mint, 0.125)
-        .with_tx(OrganicTransaction::ERC1155Deploy, 0.125)
-        .with_tx(OrganicTransaction::ERC1155Mint, 0.125)
+        .with_txs(tx_probabilities)
         .build(
             provider
                 .clone()
