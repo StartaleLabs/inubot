@@ -11,7 +11,7 @@ use alloy::{
     },
 };
 use clap::{ArgAction, Args, Subcommand};
-use eyre::Result;
+use eyre::{eyre, Result};
 use serde::{Deserialize, Serialize};
 use tokio::{select, signal};
 use tokio_stream::StreamExt;
@@ -29,17 +29,22 @@ use crate::{
 pub mod metrics;
 
 #[derive(Debug, Serialize, Deserialize, Args)]
+#[command(next_help_heading = "Run Options")]
 pub struct RunArgs {
+    /// Maximum TPS to be achieved
     #[arg(short, long)]
     pub max_tps: u32,
+    /// Duration for which bot will continue to run
     #[serde(with = "humantime_serde")]
     #[arg(short, long, value_parser = humantime::parse_duration, default_value = "100years")]
     pub duration: Duration,
+    /// Show metrics as well
     #[arg(long, action(ArgAction::SetTrue))]
     pub metrics: bool,
 }
 
 #[derive(Debug, Serialize, Deserialize, Args)]
+#[command(next_help_heading = "Withdraw Options")]
 pub struct WithdrawArgs {
     #[arg(short, long)]
     pub max_tps: u32,
@@ -47,22 +52,21 @@ pub struct WithdrawArgs {
 
 #[derive(Debug, Serialize, Deserialize, Subcommand)]
 pub enum Commands {
+    /// Start sending the transactions to network
     Run(RunArgs),
+    /// Withdraw the funds back from actors account to master
     Withdraw(WithdrawArgs),
+    /// Only run the chain metrics
     Metrics,
+    /// Generate a random account
     Mnemonic,
+    /// Deploy the helper contract
     Deploy,
 }
 
 impl Commands {
     pub async fn execute(&self, config: &InuConfig) -> Result<()> {
-        let network = config.get_network();
-        let global_agrs = config.get_global();
-        let provider = ProviderBuilder::new()
-            .with_recommended_fillers()
-            .on_builtin(&network.rpc_url)
-            .await?;
-
+        let global_agrs: &crate::cli::GlobalOptions = config.get_global();
         match self {
             Commands::Run(args) => {
                 info!("Initializing Run command..");
@@ -71,6 +75,15 @@ impl Commands {
                     duration,
                     metrics,
                 } = args;
+
+                let network = config
+                    .get_network()
+                    .clone()
+                    .ok_or(eyre!("Network not found"))?;
+                let provider = ProviderBuilder::new()
+                    .with_recommended_fillers()
+                    .on_builtin(&network.rpc_url)
+                    .await?;
 
                 let mut manager = setup_manager(
                     provider,
@@ -119,6 +132,15 @@ impl Commands {
                 info!("Initializing Withdraw command..");
                 let WithdrawArgs { max_tps } = args;
 
+                let network = config
+                    .get_network()
+                    .clone()
+                    .ok_or(eyre!("Network not found"))?;
+                let provider = ProviderBuilder::new()
+                    .with_recommended_fillers()
+                    .on_builtin(&network.rpc_url)
+                    .await?;
+
                 let manager = setup_manager(
                     provider,
                     *max_tps,
@@ -139,7 +161,12 @@ impl Commands {
                     .await
             }
             Commands::Metrics => {
-                spwan_metrics(network.clone()).await?.await?;
+                let network = config
+                    .get_network()
+                    .clone()
+                    .ok_or(eyre!("Network not found"))?;
+
+                spwan_metrics(network).await?.await?;
             }
             Commands::Mnemonic => {
                 // Generate a random wallet (24 word phrase)
@@ -165,6 +192,15 @@ impl Commands {
                 }
             }
             Commands::Deploy => {
+                let network = config
+                    .get_network()
+                    .clone()
+                    .ok_or(eyre!("Network not found"))?;
+                let provider = ProviderBuilder::new()
+                    .with_recommended_fillers()
+                    .on_builtin(&network.rpc_url)
+                    .await?;
+
                 let master = build_master_signer(config.get_mnemonic())?;
                 info!(
                     "deploying organic contract with master account - {}",

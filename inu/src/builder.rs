@@ -52,15 +52,11 @@ impl TransactionRandomizerBuilder {
             } else {
                 let organic = Organic::deploy(provider).await?;
                 info!("organic contract deployed at: {}", organic.address());
-                organic.address().clone()
+                *organic.address()
             }
         };
-        let (txs, probabilities): (_, Vec<_>) = self
-            .tx_probabilities
-            .into_iter()
-            .map(|(k, v)| (k, v))
-            .unzip();
-        let dist: WeightedIndex<f64> = WeightedIndex::new(&probabilities)?;
+        let (txs, probabilities): (_, Vec<_>) = self.tx_probabilities.into_iter().unzip();
+        let dist: WeightedIndex<f64> = WeightedIndex::new(probabilities)?;
 
         Ok(TransactionRandomizer {
             organic_address: orgainc_address,
@@ -88,7 +84,7 @@ impl TransactionRandomizer {
     pub fn random(&self, from: Address) -> TransactionRequest {
         let tx = self.sample_tx();
         tracing::Span::current().record("tx", tx.to_string());
-        tx.build(from, self.organic_address.clone())
+        tx.build(from, self.organic_address)
     }
 }
 

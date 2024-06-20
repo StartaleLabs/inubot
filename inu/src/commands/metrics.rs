@@ -161,13 +161,11 @@ async fn http_block_stream<P: Provider + Clone + 'static>(
 async fn block_stream(rpc_url: &str) -> Result<BoxStream<'static, Result<Block>>> {
     let provider = ProviderBuilder::new().on_builtin(rpc_url).await?;
     let connection: BuiltInConnectionString = rpc_url.parse()?;
-    let stream = match connection {
+    match connection {
         BuiltInConnectionString::Http(_) => http_block_stream(provider.clone()).await,
         BuiltInConnectionString::Ws(_, _) => ws_block_stream(provider.clone()).await,
         _ => Err(eyre!("Unsupported connection type")),
-    };
-
-    stream
+    }
 }
 
 pub async fn spwan_metrics_channel(network: Network) -> Result<WatchStream<ChainStats>> {
