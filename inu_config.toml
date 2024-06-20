@@ -1,11 +1,12 @@
 tx_timeout = "15s"
 tps_per_actor = 50
-account_dust_amount = 0.0001
+gas_multiplier = 1.51
 
 [networks.op-inu]
 block_time = "1s"
 # rpc_url = "ws://op-inu.astar.network:8546"
 rpc_url = "ws://op-inu.astar.network:8546"
+organic_address = "0x9f7ddec24dd21b41d3cc87330f860e4d8dad10ed"
 default = true
 
 [networks.local]

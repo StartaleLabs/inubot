@@ -2,7 +2,9 @@ use std::{sync::Arc, time::Duration};
 
 use alloy::{
     hex,
-    providers::{Provider, ProviderBuilder},
+    network::EthereumWallet,
+    primitives::Address,
+    providers::{fillers::WalletFiller, Provider, ProviderBuilder},
     signers::local::{
         coins_bip39::{English, Mnemonic},
         MnemonicBuilder,
@@ -16,7 +18,8 @@ use tokio_stream::StreamExt;
 use tracing::{debug, info};
 
 use crate::{
-    actor::{ActorManager, RecommendedProvider},
+    actor::{build_master_signer, ActorManager, RecommendedProvider},
+    builder::{OrganicTransaction, TransactionRandomizerBuilder},
     cli::{InuConfig, Network},
     commands::metrics::spwan_metrics_channel,
     gas_oracle::GasPricePoller,
@@ -72,6 +75,8 @@ impl Commands {
                     provider,
                     *max_tps,
                     global_agrs.tps_per_actor,
+                    global_agrs.gas_multiplier,
+                    network.organic_address,
                     config.get_mnemonic(),
                 )
                 .await?;
@@ -116,6 +121,11 @@ impl Commands {
                     provider,
                     *max_tps,
                     global_agrs.tps_per_actor,
+                    global_agrs.gas_multiplier,
+                    network.organic_address.or(
+                        // just to prevent the deployment of organic contract we use zero address
+                        Some(Address::ZERO),
+                    ),
                     config.get_mnemonic(),
                 )
                 .await?;
@@ -160,6 +170,8 @@ async fn setup_manager(
     provider: RecommendedProvider,
     max_tps: u32,
     tps_per_actor: u32,
+    gas_multiplier: f64,
+    organic_address: Option<Address>,
     phrase: &str,
 ) -> Result<ActorManager> {
     let provider_shared = Arc::new(provider.clone());
@@ -173,14 +185,32 @@ async fn setup_manager(
         .with_tps(max_tps)?
         .spawn();
 
+    let randomizer = TransactionRandomizerBuilder::new(organic_address)
+        .with_tx(OrganicTransaction::Transfer, 0.125 * 2.0)
+        .with_tx(OrganicTransaction::ERC20Deploy, 0.125)
+        .with_tx(OrganicTransaction::ERC20Mint, 0.125)
+        .with_tx(OrganicTransaction::ERC721Deploy, 0.125)
+        .with_tx(OrganicTransaction::ERC721Mint, 0.125)
+        .with_tx(OrganicTransaction::ERC1155Deploy, 0.125)
+        .with_tx(OrganicTransaction::ERC1155Mint, 0.125)
+        .build(
+            provider
+                .clone()
+                .join_with(WalletFiller::<EthereumWallet>::new(
+                    build_master_signer(phrase)?.into(),
+                )),
+        )
+        .await?;
+
     let manager = ActorManager::new(
         phrase,
         max_tps,
         tps_per_actor,
         provider,
         rate_handle,
-        1.5,
+        gas_multiplier,
         gas_oracle,
+        Arc::new(randomizer),
     )
     .await?;
 

@@ -13,7 +13,10 @@ use alloy::{
         json_rpc::{ErrorPayload, RpcError},
         types::eth::{TransactionReceipt, TransactionRequest},
     },
-    signers::local::{coins_bip39::English, MnemonicBuilder},
+    signers::{
+        k256::ecdsa::SigningKey,
+        local::{coins_bip39::English, LocalSigner, MnemonicBuilder},
+    },
     transports::{BoxTransport, TransportError, TransportErrorKind},
 };
 use eyre::{eyre, Result};
@@ -29,7 +32,7 @@ use crate::{
         error::TxRpcError,
         nonce::{NonceHandle, NonceManager, TxFailContext},
     },
-    builder::TxBuilder,
+    builder::TransactionRandomizer,
     gas_oracle::GasPriceChannel,
     rate::{RateControllerHandle, SendConfig},
 };
@@ -88,6 +91,7 @@ pub struct Actor<P, S> {
     provider: Arc<P>,
     signer: Arc<S>,
     rate_controller: RateControllerHandle,
+    tx_builder: Arc<TransactionRandomizer>,
 }
 
 impl<P, S> Actor<P, S> {
@@ -108,6 +112,7 @@ impl<P: Provider<BoxTransport>, S: NetworkWallet<Ethereum>> Actor<P, S> {
         provider: Arc<P>,
         signer: Arc<S>,
         rate_controller: RateControllerHandle,
+        tx_builder: Arc<TransactionRandomizer>,
     ) -> Result<Self> {
         let nonce = provider.get_transaction_count(address).await?;
         let chain_id = provider.get_chain_id().await?;
@@ -121,6 +126,7 @@ impl<P: Provider<BoxTransport>, S: NetworkWallet<Ethereum>> Actor<P, S> {
             provider,
             signer,
             rate_controller,
+            tx_builder,
         })
     }
 
@@ -203,7 +209,10 @@ impl<P: Provider<BoxTransport>, S: NetworkWallet<Ethereum>> Actor<P, S> {
 
     #[instrument(skip_all, fields(nonce), err(level = Level::ERROR))]
     pub async fn send_tx(&self, timeout: Duration) -> Result<(), ActorError> {
-        let tx = TxBuilder::build(self.address).with_chain_id(self.chain_id);
+        let tx = self
+            .tx_builder
+            .random(self.address)
+            .with_chain_id(self.chain_id);
         if let Some((ready_tx, nonce_handle, gas_price)) = self.apply_nonce(tx).await? {
             tracing::Span::current().record("nonce", nonce_handle.get());
 
@@ -349,10 +358,11 @@ impl ActorManager {
         rate_handle: RateControllerHandle,
         gas_multiplier: f64,
         gas_oracle: GasPriceChannel,
+        tx_builder: Arc<TransactionRandomizer>,
     ) -> Result<Self> {
         let num_actors = estimate_actors_count(max_tps, tps_per_actor);
         // first account is master account and only used to topup other actors
-        let (signer, master_address, actor_addresses) = build_signer(phrase, num_actors).await?;
+        let (signer, master_address, actor_addresses) = build_wallet(phrase, num_actors)?;
         let provider = Arc::new(provider.join_with(WalletFiller::new(signer.clone())));
         let signer: Arc<EthereumWallet> = Arc::new(signer);
 
@@ -372,6 +382,7 @@ impl ActorManager {
                     let provider = provider.clone();
                     let signer = signer.clone();
                     let rate_handle = rate_handle.clone();
+                    let tx_builder = tx_builder.clone();
                     async move {
                         Actor::new(
                             address,
@@ -380,6 +391,7 @@ impl ActorManager {
                             provider,
                             signer,
                             rate_handle,
+                            tx_builder,
                         )
                         .await
                     }
@@ -509,16 +521,18 @@ impl ActorManager {
 ///
 /// Utlilty functions
 ///
+///
 
-async fn build_signer(
-    phrase: &str,
-    num_actors: u32,
-) -> Result<(EthereumWallet, Address, Vec<Address>)> {
-    let master = MnemonicBuilder::<English>::default()
+pub fn build_master_signer(phrase: &str) -> Result<LocalSigner<SigningKey>> {
+    MnemonicBuilder::<English>::default()
         .phrase(phrase)
-        .index(0)
-        .unwrap()
-        .build()?;
+        .index(0)?
+        .build()
+        .map_err(Into::into)
+}
+
+fn build_wallet(phrase: &str, num_actors: u32) -> Result<(EthereumWallet, Address, Vec<Address>)> {
+    let master = build_master_signer(phrase)?;
     let master_address = master.address();
     let mut actor_address = vec![];
     let mut signer = EthereumWallet::new(master);
@@ -526,8 +540,7 @@ async fn build_signer(
     for i in 1..(num_actors + 1) {
         let wallet = MnemonicBuilder::<English>::default()
             .phrase(phrase)
-            .index(i)
-            .unwrap()
+            .index(i)?
             .build()?;
         actor_address.push(wallet.address());
         signer.register_signer(wallet);

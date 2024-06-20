@@ -1,3 +1,4 @@
+use alloy::primitives::Address;
 use clap::{Args, Parser};
 use eyre::{eyre, OptionExt, Result};
 use figment::{
@@ -54,6 +55,7 @@ impl InuConfig {
                 name: None,
                 block_time: None,
                 default: false,
+                organic_address: None,
             }
         } else if config_file.networks.len() == 1 {
             config_file.networks.values().next().unwrap().clone()
@@ -115,6 +117,7 @@ pub struct GlobalOptions {
     #[serde(with = "humantime_serde")]
     pub tx_timeout: Duration,
     pub tps_per_actor: u32,
+    pub gas_multiplier: f64,
 }
 
 impl Default for GlobalOptions {
@@ -122,6 +125,7 @@ impl Default for GlobalOptions {
         Self {
             tx_timeout: Duration::from_secs(15),
             tps_per_actor: 50,
+            gas_multiplier: 1.5,
         }
     }
 }
@@ -139,6 +143,7 @@ pub struct Network {
     pub block_time: Option<Duration>,
     #[serde(default)]
     default: bool,
+    pub organic_address: Option<Address>,
 }
 
 ///
@@ -177,4 +182,7 @@ struct GlobalArgs {
     #[serde(skip_serializing_if = "Option::is_none")]
     #[arg(long, global = true)]
     tps_per_actor: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[arg(long, global = true)]
+    gas_multiplier: Option<f64>,
 }
