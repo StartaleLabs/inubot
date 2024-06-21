@@ -198,18 +198,18 @@ mod test {
     #[tokio::test]
     async fn basic() {
         let manager = NonceManager::new(0);
+        // get 0
+        let nonce0 = manager.next_nonce().await;
         // get 1
         let nonce1 = manager.next_nonce().await;
         // get 2
         let nonce2 = manager.next_nonce().await;
-        // get 3
-        let nonce3 = manager.next_nonce().await;
 
         let task1 = tokio::spawn(async move {
-            // free 1
-            nonce1.free().await;
-            // free 2 with error
-            nonce2
+            // free 0
+            nonce0.free().await;
+            // free 1 with error
+            nonce1
                 .failed(TxFailContext {
                     gas_price: 100,
                     might_be_timeout: false,
@@ -220,22 +220,26 @@ mod test {
         });
 
         let task2 = tokio::spawn(async move {
-            // free 3
-            nonce3.free().await;
+            // free 2
+            nonce2.free().await;
         });
 
         let manager_clone = manager.clone();
         let task3 = tokio::spawn(async move {
+            // get 0
             let _ = manager_clone.next_nonce().await;
+            // get 1
             let _ = manager_clone.next_nonce().await;
         });
 
         tokio::try_join!(task1, task2, task3).unwrap();
 
-        let nonce4 = manager.next_nonce().await;
-        let nonce5 = manager.next_nonce().await;
+        // get 2
+        let nonce2 = manager.next_nonce().await;
+        // get 3
+        let nonce3 = manager.next_nonce().await;
 
-        assert_eq!(nonce4.val.get(), 3);
-        assert_eq!(nonce5.val.get(), 4);
+        assert_eq!(nonce2.val.get(), 2);
+        assert_eq!(nonce3.val.get(), 3);
     }
 }

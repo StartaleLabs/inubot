@@ -20,7 +20,7 @@ use tracing::{debug, info, info_span, Instrument};
 use crate::{
     actor::{build_master_signer, ActorManager, RecommendedProvider},
     builder::{Organic, OrganicTransaction, TransactionRandomizerBuilder},
-    cli::{InuConfig, Network},
+    cli::{GlobalOptions, InuConfig, Network},
     commands::metrics::spwan_metrics_channel,
     gas_oracle::GasPricePoller,
     rate::RateController,
@@ -88,8 +88,7 @@ impl Commands {
                 let mut manager = setup_manager(
                     provider,
                     *max_tps,
-                    global_agrs.tps_per_actor,
-                    global_agrs.gas_multiplier,
+                    global_agrs.clone(),
                     network.organic_address,
                     config.get_tx_probabilities().clone(),
                     config.get_mnemonic(),
@@ -144,8 +143,7 @@ impl Commands {
                 let manager = setup_manager(
                     provider,
                     *max_tps,
-                    global_agrs.tps_per_actor,
-                    global_agrs.gas_multiplier,
+                    global_agrs.clone(),
                     network.organic_address.or(
                         // just to prevent the deployment of organic contract we use zero address
                         Some(Address::ZERO),
@@ -221,8 +219,7 @@ impl Commands {
 async fn setup_manager(
     provider: RecommendedProvider,
     max_tps: u32,
-    tps_per_actor: u32,
-    gas_multiplier: f64,
+    global_args: GlobalOptions,
     organic_address: Option<Address>,
     tx_probabilities: HashMap<OrganicTransaction, f64>,
     phrase: &str,
@@ -251,11 +248,10 @@ async fn setup_manager(
 
     let manager = ActorManager::new(
         phrase,
+        global_args,
         max_tps,
-        tps_per_actor,
         provider,
         rate_handle,
-        gas_multiplier,
         gas_oracle,
         Arc::new(randomizer),
     )

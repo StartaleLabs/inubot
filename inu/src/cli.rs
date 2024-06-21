@@ -139,7 +139,7 @@ fn default_transaction_probablities() -> HashMap<OrganicTransaction, f64> {
     .into()
 }
 
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct GlobalOptions {
     #[serde(with = "humantime_serde")]
     pub tx_timeout: Duration,

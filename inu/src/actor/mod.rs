@@ -33,6 +33,7 @@ use crate::{
         nonce::{NonceHandle, NonceManager, TxFailContext},
     },
     builder::TransactionRandomizer,
+    cli::GlobalOptions,
     gas_oracle::GasPriceChannel,
     rate::{RateControllerHandle, SendConfig},
 };
@@ -358,14 +359,18 @@ impl ActorManager {
     )]
     pub async fn new(
         phrase: &str,
+        global_args: GlobalOptions,
         max_tps: u32,
-        tps_per_actor: u32,
         provider: RecommendedProvider,
         rate_handle: RateControllerHandle,
-        gas_multiplier: f64,
         gas_oracle: GasPriceChannel,
         tx_builder: Arc<TransactionRandomizer>,
     ) -> Result<Self> {
+        let GlobalOptions {
+            tps_per_actor,
+            gas_multiplier,
+            ..
+        } = global_args;
         let num_actors = estimate_actors_count(max_tps, tps_per_actor);
         // first account is master account and only used to topup other actors
         let (signer, master_address, actor_addresses) = build_wallet(phrase, num_actors)?;
@@ -512,7 +517,7 @@ impl ActorManager {
         self.attempt_to_send_funds_back(tx_timeout).await;
     }
 
-    /// Attempt to send all the funds back to master account, 
+    /// Attempt to send all the funds back to master account,
     /// errors are logged and ignored
     pub async fn attempt_to_send_funds_back(&self, tx_timeout: Duration) {
         let handles = self.actors.iter().map(|actor| {
