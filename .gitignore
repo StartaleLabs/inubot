@@ -3,3 +3,4 @@ target/
 # Dependency directories
 Cargo.lock
 .env
+inu_config.toml

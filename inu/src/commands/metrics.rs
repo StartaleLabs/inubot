@@ -188,7 +188,7 @@ pub async fn spwan_metrics_channel(network: Network) -> Result<WatchStream<Chain
     let _ = block_stream(&rpc_url).await?;
 
     let (tx, rx) = watch::channel(ChainStats::new(block_time));
-    let span = info_span!("metrics");
+    let span = info_span!("metrics_channel");
     let fut = async move {
         'outer: loop {
             if let Ok(mut stream) = block_stream(&rpc_url).await {

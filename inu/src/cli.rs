@@ -128,13 +128,13 @@ struct InuConfigFile {
 
 fn default_transaction_probablities() -> HashMap<OrganicTransaction, f64> {
     [
-        (OrganicTransaction::Transfer, 0.125 * 2.0),
-        (OrganicTransaction::ERC20Deploy, 0.125),
-        (OrganicTransaction::ERC20Mint, 0.125),
-        (OrganicTransaction::ERC721Deploy, 0.125),
-        (OrganicTransaction::ERC721Mint, 0.125),
-        (OrganicTransaction::ERC1155Deploy, 0.125),
-        (OrganicTransaction::ERC1155Mint, 0.125),
+        (OrganicTransaction::Transfer, 0.95),       // 93%
+        (OrganicTransaction::ERC20Mint, 0.02),      // 2%
+        (OrganicTransaction::ERC721Mint, 0.015),    // 1.5%
+        (OrganicTransaction::ERC1155Mint, 0.015),   // 1.5%
+        (OrganicTransaction::ERC20Deploy, 0.01),    // 1%
+        (OrganicTransaction::ERC1155Deploy, 0.005), // 0.5%
+        (OrganicTransaction::ERC721Deploy, 0.005),  // 0.5%
     ]
     .into()
 }
@@ -150,7 +150,7 @@ pub struct GlobalOptions {
 impl Default for GlobalOptions {
     fn default() -> Self {
         Self {
-            tx_timeout: Duration::from_secs(15),
+            tx_timeout: Duration::from_secs(5 * 60),
             tps_per_actor: 50,
             gas_multiplier: 1.5,
         }
@@ -206,7 +206,7 @@ struct InuCli {
 #[derive(Debug, Serialize, Deserialize, Args)]
 #[command(next_help_heading = "Global Options")]
 struct GlobalArgs {
-    /// Timeout for each transaction (default: 15s)
+    /// Timeout for each transaction (default: 120s)
     #[serde(skip_serializing_if = "Option::is_none", with = "humantime_serde")]
     #[arg(long, global = true, value_parser = humantime::parse_duration)]
     tx_timeout: Option<Duration>,

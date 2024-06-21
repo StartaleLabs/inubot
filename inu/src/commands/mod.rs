@@ -15,7 +15,7 @@ use eyre::{eyre, Result};
 use serde::{Deserialize, Serialize};
 use tokio::{select, signal};
 use tokio_stream::StreamExt;
-use tracing::{debug, info};
+use tracing::{debug, info, info_span, Instrument};
 
 use crate::{
     actor::{build_master_signer, ActorManager, RecommendedProvider},
@@ -266,9 +266,12 @@ async fn setup_manager(
 
 async fn spwan_metrics(network: Network) -> Result<tokio::task::JoinHandle<()>> {
     let mut channel = spwan_metrics_channel(network.clone()).await?;
-    Ok(tokio::spawn(async move {
-        while let Some(stats) = channel.next().await {
-            info!("{}", stats.get_summary());
+    Ok(tokio::spawn(
+        async move {
+            while let Some(stats) = channel.next().await {
+                info!("{}", stats.get_summary());
+            }
         }
-    }))
+        .instrument(info_span!("metrics")),
+    ))
 }
