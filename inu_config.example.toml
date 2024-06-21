@@ -1,0 +1,36 @@
+# Maximum time to wait for a tx to get confirmed
+# For a very high tps value, there might be congestion in mempool (more tx incoming than block rate)
+# then timeout should be increased accordingly
+tx_timeout = "5min"
+# Max TPS for a single actor
+# For example, if TPS is 100 then 2 actor will be spawned if value if 50
+tps_per_actor = 50
+# multiplier to apply on gas price received from RPC
+# this to account for fluctuation of gas price
+gas_multiplier = 1.5
+
+# Mapping of type of transactions to enable with their probability
+# - To disable certain type remove them from mapping
+# - The probability values can be anything greater than 0
+# - By default all of the types are enabled with probability given below
+[transactions]
+Transfer = 0.95
+ERC20Mint = 0.02
+ERC721Mint = 0.015
+ERC1155Mint = 0.015
+ERC20Deploy = 0.01
+ERC721Deploy = 0.005
+ERC1155Deploy = 0.005
+
+
+# Networks configuration
+[networks.my-network]
+# avg block time, only used to calculate tps of the first block
+block_time = "1s"
+rpc_url = "ws://localhost:12345"
+# address of helper contract
+organic_address = "0x9f7ddec24dd21b41d3cc87330f860e4d8dad10ed"
+default = true
+
+[networks.local]
+rpc_url = "ws://localhost:8545"
