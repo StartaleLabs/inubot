@@ -449,7 +449,9 @@ impl ActorManager {
             let tx = TransactionRequest::default()
                 .from(self.master_address)
                 .to(actor.address)
-                .value(amount);
+                .value(amount)
+                // some clients does not support `eth_feeHistory` so falling back to legacy gas price
+                .with_gas_price(self.provider.get_gas_price().await?);
             futs.push(self.provider.send_transaction(tx).await?.get_receipt());
         }
 

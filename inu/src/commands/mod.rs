@@ -219,8 +219,13 @@ impl Commands {
                     .clone()
                     .join_with(WalletFiller::<EthereumWallet>::new(master.into()));
 
-                let organic = Organic::deploy(provider).await?;
-                info!("organic contract deployed at: {}", organic.address());
+                // some cleints does not support `eth_feeHistory` so falling back to legacy gas price
+                let gas_price = provider.get_gas_price().await?;
+                let organic = Organic::deploy_builder(provider)
+                    .gas_price(gas_price)
+                    .deploy()
+                    .await?;
+                info!("organic contract deployed at: {}", organic);
             }
         }
         Ok(())

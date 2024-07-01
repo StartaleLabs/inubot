@@ -61,9 +61,14 @@ impl TransactionRandomizerBuilder {
                 organic_address
             } else {
                 // deploy the organic contract, if not provided
-                let organic = Organic::deploy(provider).await?;
-                info!("organic contract deployed at: {}", organic.address());
-                *organic.address()
+                // some clients does not support `eth_feeHistory` so falling back to legacy gas price
+                let gas_price = provider.get_gas_price().await?;
+                let organic_address = Organic::deploy_builder(provider)
+                    .gas_price(gas_price)
+                    .deploy()
+                    .await?;
+                info!("organic contract deployed at: {}", organic_address);
+                organic_address
             }
         };
         let (txs, probabilities): (_, Vec<_>) = self.tx_probabilities.into_iter().unzip();
