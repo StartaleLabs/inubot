@@ -31,7 +31,7 @@ async fn main() -> Result<()> {
     use crate::cli::InuConfig;
 
     setup_tracing()?;
-    dotenv()?;
+    dotenv().ok();
 
     let (config, command) = InuConfig::load()?;
     command.execute(&config).await?;
