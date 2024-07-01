@@ -13,7 +13,7 @@ use tracing::{info, instrument};
 #[derive(Debug)]
 pub struct InuConfig {
     global: GlobalOptions,
-    mnemonic: String,
+    mnemonic: Option<String>,
     network: Option<Network>,
     transactions: HashMap<OrganicTransaction, f64>,
 }
@@ -105,7 +105,7 @@ impl InuConfig {
         &self.global
     }
 
-    pub fn get_mnemonic(&self) -> &str {
+    pub fn get_mnemonic(&self) -> &Option<String> {
         &self.mnemonic
     }
 
@@ -123,7 +123,7 @@ struct InuConfigFile {
     // the mnemonic is only palceholder here and only to be fetch from env
     // this is not serialised
     #[serde(skip_serializing)]
-    mnemonic: String,
+    mnemonic: Option<String>,
 }
 
 fn default_transaction_probablities() -> HashMap<OrganicTransaction, f64> {

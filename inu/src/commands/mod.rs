@@ -83,6 +83,7 @@ impl Commands {
                     duration,
                     metrics,
                 } = args;
+                let mnemonic = ensure_mnemonic(config)?;
 
                 let network = config
                     .get_network()
@@ -99,7 +100,7 @@ impl Commands {
                     global_agrs.clone(),
                     network.organic_address,
                     config.get_tx_probabilities().clone(),
-                    config.get_mnemonic(),
+                    &mnemonic,
                 )
                 .await?;
 
@@ -138,6 +139,7 @@ impl Commands {
             Commands::Withdraw(args) => {
                 info!("Initializing Withdraw command..");
                 let WithdrawArgs { max_tps } = args;
+                let mnemonic = ensure_mnemonic(config)?;
 
                 let network = config
                     .get_network()
@@ -157,7 +159,7 @@ impl Commands {
                         Some(Address::ZERO),
                     ),
                     config.get_tx_probabilities().clone(),
-                    config.get_mnemonic(),
+                    &mnemonic,
                 )
                 .await?;
 
@@ -206,8 +208,9 @@ impl Commands {
                     .with_recommended_fillers()
                     .on_builtin(&network.rpc_url)
                     .await?;
+                let mnemonic = ensure_mnemonic(config)?;
 
-                let master = build_master_signer(config.get_mnemonic())?;
+                let master = build_master_signer(&mnemonic)?;
                 info!(
                     "deploying organic contract with master account - {}",
                     master.address()
@@ -278,4 +281,12 @@ async fn spwan_metrics(network: Network) -> Result<tokio::task::JoinHandle<()>> 
         }
         .instrument(info_span!("metrics")),
     ))
+}
+
+fn ensure_mnemonic(config: &InuConfig) -> Result<String> {
+    config
+        .get_mnemonic()
+        .as_ref()
+        .cloned()
+        .ok_or_else(|| eyre!("Mnemonic not found"))
 }
