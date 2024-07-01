@@ -60,7 +60,7 @@ impl RateControllerHandle {
 /// and handle the tx for enitre lifecycle, freeing nonce if tx fails
 pub struct RateController<P> {
     provider: Arc<P>,
-    max_tps: NonZeroU32,
+    max_tps: f64,
 }
 
 impl<P> RateController<P> {
@@ -70,12 +70,15 @@ impl<P> RateController<P> {
         Self {
             provider,
             // 1 TPS Default
-            max_tps: NonZeroU32::MIN,
+            max_tps: 1.0,
         }
     }
 
-    pub fn with_tps(mut self, max_tps: u32) -> Result<Self> {
-        self.max_tps = NonZeroU32::new(max_tps).ok_or(eyre!("TPS must be greater than 0"))?;
+    pub fn with_tps(mut self, max_tps: f64) -> Result<Self> {
+        if max_tps <= 0.0 {
+            return Err(eyre!("TPS must be greater than 0"));
+        }
+        self.max_tps = max_tps;
         Ok(self)
     }
 }
@@ -147,7 +150,15 @@ impl<P: Provider + 'static> RateController<P> {
     }
 
     async fn into_future(self, mut ixns: mpsc::Receiver<SendConfig>) {
-        let limiter = DefaultDirectRateLimiter::direct(Quota::per_second(self.max_tps));
+        let quota_duration = 1.0 / self.max_tps;
+        let quota = Quota::with_period(Duration::from_secs_f64(quota_duration))
+            .expect("tps > 0, check should be done before calling this function")
+            .allow_burst(
+                NonZeroU32::new(self.max_tps.ceil() as u32)
+                    .expect("tps > 0, check should be done before calling this function"),
+            );
+        let limiter = DefaultDirectRateLimiter::direct(quota);
+
         debug!("loop started");
         while let Some(config) = ixns.recv().await {
             // wait until permitted
@@ -162,7 +173,7 @@ impl<P: Provider + 'static> RateController<P> {
         //      For TPS < 64, channel size is TPS
         //      For TPS => 64, channel size is 64
         // TODO: revist channel size, maybe make it configurable
-        let (ix_tx, ixns) = mpsc::channel(self.max_tps.get().min(64) as usize);
+        let (ix_tx, ixns) = mpsc::channel(self.max_tps.ceil().min(64.0) as usize);
         let span = info_span!("rate_controller", max_tps = %self.max_tps);
 
         self.into_future(ixns).instrument(span).spawn_task();

@@ -28,12 +28,20 @@ use crate::{
 
 pub mod metrics;
 
+fn is_positive_f64(val: &str) -> Result<f64, String> {
+    match val.parse::<f64>() {
+        Ok(v) if v > 0.0 => Ok(v),
+        Ok(_) => Err(String::from("The value must be positive.")),
+        Err(_) => Err(String::from("The value must be a valid number.")),
+    }
+}
+
 #[derive(Debug, Serialize, Deserialize, Args)]
 #[command(next_help_heading = "Run Options")]
 pub struct RunArgs {
     /// Maximum TPS to be achieved
-    #[arg(short, long)]
-    pub max_tps: u32,
+    #[arg(short, long, value_parser = is_positive_f64)]
+    pub max_tps: f64,
     /// Duration for which bot will continue to run
     #[serde(with = "humantime_serde")]
     #[arg(short, long, value_parser = humantime::parse_duration, default_value = "100years")]
@@ -46,8 +54,8 @@ pub struct RunArgs {
 #[derive(Debug, Serialize, Deserialize, Args)]
 #[command(next_help_heading = "Withdraw Options")]
 pub struct WithdrawArgs {
-    #[arg(short, long)]
-    pub max_tps: u32,
+    #[arg(short, long, value_parser = is_positive_f64)]
+    pub max_tps: f64,
 }
 
 #[derive(Debug, Serialize, Deserialize, Subcommand)]
@@ -218,7 +226,7 @@ impl Commands {
 
 async fn setup_manager(
     provider: RecommendedProvider,
-    max_tps: u32,
+    max_tps: f64,
     global_args: GlobalOptions,
     organic_address: Option<Address>,
     tx_probabilities: HashMap<OrganicTransaction, f64>,

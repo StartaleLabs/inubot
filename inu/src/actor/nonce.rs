@@ -125,7 +125,7 @@ impl NonceHandle {
 
 /// Nonce manager which keeps tracks of failed nonces and provides lowest
 /// available nonce
-/// 
+///
 /// Based on the ideas from here - https://ethereum.stackexchange.com/a/40286
 ///
 /// The NonceManager is responsible for managing the allocation and deallocation

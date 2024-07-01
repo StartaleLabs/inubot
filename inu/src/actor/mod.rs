@@ -360,7 +360,7 @@ impl ActorManager {
     pub async fn new(
         phrase: &str,
         global_args: GlobalOptions,
-        max_tps: u32,
+        max_tps: f64,
         provider: RecommendedProvider,
         rate_handle: RateControllerHandle,
         gas_oracle: GasPriceChannel,
@@ -566,6 +566,6 @@ fn build_wallet(phrase: &str, num_actors: u32) -> Result<(EthereumWallet, Addres
 }
 
 #[instrument(ret(level = Level::DEBUG))]
-fn estimate_actors_count(max_tps: u32, tps_per_actor: u32) -> u32 {
-    (max_tps as f64 / tps_per_actor as f64).ceil() as u32
+fn estimate_actors_count(max_tps: f64, tps_per_actor: u32) -> u32 {
+    (max_tps / tps_per_actor as f64).ceil() as u32
 }
