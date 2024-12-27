@@ -443,9 +443,13 @@ impl ActorManager {
             format_units(master_balance, "eth")?,
             format_units(amount, "eth")?
         );
-
         let mut futs = vec![];
         for actor in self.actors.iter() {
+        // get balance of actor: skip if balance is superior of actor (already been funded in previous runs)
+        let actor_balance = self.provider.get_balance(actor.address).await?;
+        if actor_balance > master_balance {
+            return Ok(())
+        }
             let tx = TransactionRequest::default()
                 .from(self.master_address)
                 .to(actor.address)
