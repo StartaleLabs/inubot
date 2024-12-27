@@ -448,7 +448,7 @@ impl ActorManager {
         // get balance of actor: skip if balance is superior of actor (already been funded in previous runs)
         let actor_balance = self.provider.get_balance(actor.address).await?;
         if actor_balance > master_balance {
-            return Ok(())
+            continue
         }
             let tx = TransactionRequest::default()
                 .from(self.master_address)
