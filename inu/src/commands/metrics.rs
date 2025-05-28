@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use alloy::{
     providers::{Provider, ProviderBuilder},
     rpc::{
@@ -5,6 +7,7 @@ use alloy::{
         types::{eth::Block, BlockTransactionsKind},
     },
 };
+use colored::Colorize;
 use eyre::{eyre, Result};
 use futures::stream::BoxStream;
 use futures_util::StreamExt;
@@ -39,17 +42,20 @@ impl WelfordMovingAverage {
 /// Helper struct to save chain statistics and operate over it
 #[derive(Debug, Default, Clone)]
 pub struct ChainStats {
-    block_time: u64,
+    block_gas_limit: u128,
+    expected_block_time: u64,
     last_block: Option<Block>,
-    last_block_span: Option<u64>,
-    tps: WelfordMovingAverage,
-    gas_used: WelfordMovingAverage,
+    block_time: Option<u64>,
+    avg_block_time: WelfordMovingAverage,
+    avg_tps: WelfordMovingAverage,
+    avg_gas_used: WelfordMovingAverage,
 }
 
 impl ChainStats {
     pub fn new(block_time: u64) -> Self {
         Self {
-            block_time,
+            expected_block_time: block_time,
+            block_gas_limit: MAX_BLOCK_GAS_LIMIT,
             ..Default::default()
         }
     }
@@ -58,34 +64,53 @@ impl ChainStats {
     pub fn update(&mut self, block: &Block) {
         let span = match &self.last_block {
             Some(last_block) => block.header.timestamp - last_block.header.timestamp,
-            None => self.block_time,
+            None => self.expected_block_time,
         };
 
-        self.tps.update(block.transactions.len() as f64, span);
-        self.gas_used.update(block.header.gas_used as f64, 1);
+        self.avg_block_time.update(span as f64, 1);
+        self.avg_tps.update(block.transactions.len() as f64, span);
+        self.avg_gas_used.update(block.header.gas_used as f64, 1);
 
         self.last_block = Some(block.clone());
-        self.last_block_span = Some(span);
+        self.block_time = Some(span);
+        self.block_gas_limit = block.header.gas_limit;
     }
 
     pub fn average_tps(&self) -> f64 {
         if self.last_block.is_some() {
-            self.tps.mean()
+            self.avg_tps.mean()
         } else {
             0.0
         }
     }
 
+    pub fn average_block_time(&self) -> f64 {
+        if self.last_block.is_some() {
+            self.avg_block_time.mean()
+        } else {
+            self.expected_block_time as f64
+        }
+    }
+
     pub fn block_tps(&self) -> f64 {
         if let Some(block) = &self.last_block {
-            block.transactions.len() as f64 / self.last_block_span.unwrap_or(self.block_time) as f64
+            block.transactions.len() as f64
+                / self.block_time.unwrap_or(self.expected_block_time) as f64
+        } else {
+            0.0
+        }
+    }
+
+    pub fn block_tx(&self) -> f64 {
+        if let Some(block) = &self.last_block {
+            block.transactions.len() as f64
         } else {
             0.0
         }
     }
 
     pub fn average_utilization(&self) -> f64 {
-        (self.gas_used.mean() * 100.0) / MAX_BLOCK_GAS_LIMIT as f64
+        (self.avg_gas_used.mean() * 100.0) / MAX_BLOCK_GAS_LIMIT as f64
     }
 
     pub fn block_utlization(&self) -> f64 {
@@ -96,17 +121,48 @@ impl ChainStats {
         }
     }
 
+    pub fn block_mgas(&self) -> f64 {
+        if let Some(block) = &self.last_block {
+            (block.header.gas_used / 1_000_000) as f64
+        } else {
+            0f64
+        }
+    }
+
+    pub fn average_block_mgas(&self) -> f64 {
+        self.avg_gas_used.mean() / 1_000_000f64
+    }
+
     pub fn get_summary(&self) -> String {
         self.last_block
             .as_ref()
             .map(|block| {
+                let block_number = block.header.number.unwrap_or_default();
+                let block_print = if block_number % 2_000 == 0 {
+                    format!("Epoch #{}", block.header.number.unwrap_or_default()).bold().on_bright_red()
+                } else {
+                    format!("Block #{}", block.header.number.unwrap_or_default()).bold()
+                };
+
+                let is_close_to_full = if block.header.gas_used as f64 / block.header.gas_limit as f64 > 0.98 {
+                    "FULL".green().bold()
+                } else {
+                    "\t".normal()
+                };
+
                 format!(
-                    "[Block #{:?}] TPS: (Avg={:.2}, Blk={:.2}), Utilz: (Avg={:.2}, Blk={:.2})",
-                    block.header.number.unwrap_or_default(),
+                    "[{}, {}] {:.2} Tx, {:.2} MGas {} \tAvg({:.2}s Block Time, {:.2} Tx, {:.2} MGas)",
+                    block_print,
+                    humantime::format_duration(Duration::from_secs(
+                        self.block_time.unwrap_or(self.expected_block_time)
+                    ))
+                    .to_string().italic(),
+                    self.block_tx(),
+                    self.block_mgas(),
+                    format!("{}", is_close_to_full),
+                    self.average_block_time(),
                     self.average_tps(),
-                    self.block_tps(),
-                    self.average_utilization(),
-                    self.block_utlization()
+                    self.average_block_mgas(),
                 )
             })
             .unwrap_or("No data".to_string())

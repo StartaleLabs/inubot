@@ -1,0 +1,4 @@
+export PRIVATE_KEY=`cast wallet private-key --mnemonic "test test test test test test test test test test test junk" --mnemonic-index ${INDEX}` && \
+# cast send `cast wallet address --private-key $PRIVATE_KEY`  --value "99999 ether" --private-key `cast wallet private-key --mnemonic "test test test test test test test test test test test junk" --mnemonic-index 0` && \
+contender setup ./scenarios/stress.toml -r $ETH_RPC_URL  --min-balance 0.5 -p $PRIVATE_KEY  && \
+contender spam ./scenarios/stress.toml  -r $ETH_RPC_URL  --tpb 100 -d 10 -p $PRIVATE_KEY --min-balance 200 --wait 50 --gen-report -g 100 2>&1 | tee "log-${INDEX}.log"

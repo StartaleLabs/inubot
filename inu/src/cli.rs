@@ -145,6 +145,7 @@ pub struct GlobalOptions {
     pub tx_timeout: Duration,
     pub tps_per_actor: u32,
     pub gas_multiplier: f64,
+    pub mnemonic_start_index: u32,
 }
 
 impl Default for GlobalOptions {
@@ -153,6 +154,7 @@ impl Default for GlobalOptions {
             tx_timeout: Duration::from_secs(5 * 60),
             tps_per_actor: 50,
             gas_multiplier: 1.5,
+            mnemonic_start_index: 1,
         }
     }
 }
@@ -210,12 +212,18 @@ struct GlobalArgs {
     #[serde(skip_serializing_if = "Option::is_none", with = "humantime_serde")]
     #[arg(long, global = true, value_parser = humantime::parse_duration)]
     tx_timeout: Option<Duration>,
+    
     /// Per actor TPS (default: 50)
     #[serde(skip_serializing_if = "Option::is_none")]
     #[arg(long, global = true)]
     tps_per_actor: Option<u64>,
+
     #[serde(skip_serializing_if = "Option::is_none")]
     /// Gas multiplier (default: 1.5)
     #[arg(long, global = true)]
     gas_multiplier: Option<f64>,
+
+    #[serde(skip_serializing_if = "Option::is_none")]
+    #[arg(long, global = true)]
+    mnemonic_start_index: Option<u32>,
 }

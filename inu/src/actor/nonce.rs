@@ -6,14 +6,14 @@ use tokio::sync::Mutex;
 use tracing::{instrument, trace};
 
 /// Context for a failed transaction
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct TxFailContext {
     pub gas_price: u128,
     pub might_be_timeout: bool,
-    pub error: TransportError,
+    pub error: Arc<TransportError>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 enum NonceVal {
     Failed { val: u64, context: TxFailContext },
     New { val: u64 },
@@ -87,6 +87,7 @@ impl NonceManagerInner {
     }
 }
 
+#[derive(Debug, Clone)]
 pub struct NonceHandle {
     val: NonceVal,
     manager: Arc<NonceManagerInner>,
@@ -213,7 +214,7 @@ mod test {
                 .failed(TxFailContext {
                     gas_price: 100,
                     might_be_timeout: false,
-                    error: TransportErrorKind::backend_gone(),
+                    error: Arc::new(TransportErrorKind::backend_gone()),
                 })
                 .free()
                 .await;

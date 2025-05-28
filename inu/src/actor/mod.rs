@@ -2,7 +2,7 @@ use alloy::{
     eips::eip2718::Encodable2718,
     network::{Ethereum, EthereumWallet, NetworkWallet, TransactionBuilder},
     primitives::{
-        utils::{format_units, parse_ether},
+        utils::{parse_ether},
         Address, U256,
     },
     providers::{
@@ -35,7 +35,7 @@ use crate::{
     builder::TransactionRandomizer,
     cli::GlobalOptions,
     gas_oracle::GasPriceChannel,
-    rate::{RateControllerHandle, SendConfig},
+    rate::{RateControllerHandle},
 };
 
 pub mod error;
@@ -94,7 +94,7 @@ pub struct Actor<P, S> {
     gas_multiplier: f64,
     provider: Arc<P>,
     signer: Arc<S>,
-    rate_controller: RateControllerHandle,
+    _rate_controller: RateControllerHandle,
     tx_builder: Arc<TransactionRandomizer>,
 }
 
@@ -130,7 +130,7 @@ impl<P: Provider<BoxTransport>, S: NetworkWallet<Ethereum>> Actor<P, S> {
             gas_multiplier,
             provider,
             signer,
-            rate_controller,
+            _rate_controller: rate_controller,
             tx_builder,
         })
     }
@@ -161,19 +161,19 @@ impl<P: Provider<BoxTransport>, S: NetworkWallet<Ethereum>> Actor<P, S> {
             error,
         }) = failed_context
         {
-            match error {
+            match &*error {
                 RpcError::ErrorResp(resp) => {
                     // TODO: find and handle other cases
                     match resp.clone().into() {
-                        TxRpcError::NonceTooLow
-                        | TxRpcError::AlreadyImported
-                        | TxRpcError::AlreadyKnown => {
+                        TxRpcError::NonceTooLow | TxRpcError::AlreadyImported => {
                             // nonce is alredy used, skip it and continue
                             // TODO: handle this better
                             debug!("skipping as nonce already imported");
                             return Ok(None);
                         }
-                        TxRpcError::Underpriced => {
+                        // even if nonce is already know, it could mean it is stucked so
+                        // we treat as underpriced
+                        TxRpcError::Underpriced | TxRpcError::AlreadyKnown => {
                             gas_price = self.apply_gas_multiplier(gas_price.max(old_gas_price));
                             debug!(
                                 "underpriced, gas price increased to {} from {}",
@@ -182,7 +182,7 @@ impl<P: Provider<BoxTransport>, S: NetworkWallet<Ethereum>> Actor<P, S> {
                         }
                         TxRpcError::InsufficientFunds => {
                             return Err(InuActorError::NotSufficentFunds {
-                                resp,
+                                resp: resp.clone(),
                                 actor_address: self.address,
                                 balance: self.provider.get_balance(self.address).await?,
                             });
@@ -190,7 +190,7 @@ impl<P: Provider<BoxTransport>, S: NetworkWallet<Ethereum>> Actor<P, S> {
                         TxRpcError::Other { .. } => {
                             // TODO: we return error for now to identify cases that are not handled
                             //       once we cover enough, this should be removed
-                            return Err(InuActorError::UnhandledRpcError(resp));
+                            return Err(InuActorError::UnhandledRpcError(resp.clone()));
                         }
                     }
                 }
@@ -207,7 +207,7 @@ impl<P: Provider<BoxTransport>, S: NetworkWallet<Ethereum>> Actor<P, S> {
                 }
                 e => {
                     // for any other error rpc error we just return
-                    return Err(e.into());
+                    return Err(InuActorError::OtherError(eyre!("rpc error: {}", e)));
                 }
             }
         }
@@ -228,26 +228,53 @@ impl<P: Provider<BoxTransport>, S: NetworkWallet<Ethereum>> Actor<P, S> {
         // apply the nonce and gas price
         if let Some((ready_tx, nonce_handle, gas_price)) = self.apply_nonce(tx).await? {
             tracing::Span::current().record("nonce", nonce_handle.get());
+            let nonce_handle_clone = nonce_handle.clone();
 
             // encode the signed tx
-            let encoded_tx = ready_tx
+            let signed_tx = ready_tx
                 .build(&*self.signer)
                 .await
-                .map_err(|e| InuActorError::OtherError(e.into()))?
-                .encoded_2718();
+                .map_err(|e| InuActorError::OtherError(e.into()))?;
 
-            let config = SendConfig {
-                encoded_tx,
-                gas_price,
-                nonce_handle,
-                timeout,
-                from: self.address,
+            let recipet = match self.provider.send_tx_envelope(signed_tx).await {
+                Ok(ok) => ok,
+                Err(e) => {
+                    error!("error sending tx: {}", e);
+                    nonce_handle.failed(TxFailContext {
+                        gas_price,
+                        might_be_timeout: true,
+                        error: Arc::new(e),
+                    });
+                    return Ok(());
+                }
             };
 
-            if let Err(c) = self.rate_controller.send_tx(config).await {
-                c.nonce_handle.free().await;
-                return Err(eyre!("rate controller dropped! failed to sent tx").into());
+            let recipet = recipet.with_timeout(Some(timeout)).get_receipt().await;
+
+            match recipet {
+                Ok(r) => {
+                    debug!("tx sent successfully, tx hash - {}", r.transaction_hash);
+                }
+                Err(error) => {
+                    nonce_handle_clone.failed(TxFailContext {
+                        gas_price: gas_price,
+                        might_be_timeout: true,
+                        error: Arc::new(error),
+                    });
+                }
             }
+            // let config = SendConfig {
+            //     encoded_tx,
+            //     gas_price,
+            //     nonce_handle,
+            //     timeout,
+            //     from: self.address,
+            // };
+
+            // if let Err(c) = self.rate_controller.send_tx(config).await {
+            //     c.nonce_handle.free().await;
+            //     return Err(eyre!("rate controller dropped! failed to sent tx").into());
+            // }
         }
 
         Ok(())
@@ -345,8 +372,8 @@ impl<P: Provider<BoxTransport>, S: NetworkWallet<Ethereum>> Actor<P, S> {
 /// A Manager to orchestrate multiple actors and their funds
 pub struct ActorManager {
     actors: Vec<Arc<Actor<RecommendedProviderWithWallet, EthereumWallet>>>,
-    provider: Arc<RecommendedProviderWithWallet>,
-    master_address: Address,
+    _provider: Arc<RecommendedProviderWithWallet>,
+    _master_address: Address,
     tasks: JoinSet<()>,
     actor_cancel_token: CancellationToken,
     actor_error_notify: Arc<sync::Notify>,
@@ -369,11 +396,13 @@ impl ActorManager {
         let GlobalOptions {
             tps_per_actor,
             gas_multiplier,
+            mnemonic_start_index,
             ..
         } = global_args;
         let num_actors = estimate_actors_count(max_tps, tps_per_actor);
         // first account is master account and only used to topup other actors
-        let (signer, master_address, actor_addresses) = build_wallet(phrase, num_actors)?;
+        let (signer, master_address, actor_addresses) =
+            build_wallet(phrase, num_actors, mnemonic_start_index)?;
         let provider = Arc::new(provider.join_with(WalletFiller::new(signer.clone())));
         let signer: Arc<EthereumWallet> = Arc::new(signer);
 
@@ -422,8 +451,8 @@ impl ActorManager {
             tasks,
             actor_cancel_token,
             actor_error_notify,
-            master_address,
-            provider,
+            _master_address: master_address,
+            _provider: provider,
         };
 
         Ok(manager)
@@ -435,37 +464,57 @@ impl ActorManager {
     /// while retaining equal part in master account
     #[instrument(skip(self), err)]
     pub async fn fund_actors(&self) -> Result<()> {
-        let master_balance = self.provider.get_balance(self.master_address).await?;
-        // we need to send funds to all actors while retaining equal part in master account
-        let amount: U256 = master_balance.div_ceil(U256::from(self.actors.len() + 1));
-        info!(
-            "master balance: {} eth, sending {} eth to each actor from master",
-            format_units(master_balance, "eth")?,
-            format_units(amount, "eth")?
-        );
-
-        let mut futs = vec![];
-        for actor in self.actors.iter() {
-            let tx = TransactionRequest::default()
-                .from(self.master_address)
-                .to(actor.address)
-                .value(amount)
-                // some clients does not support `eth_feeHistory` so falling back to legacy gas price
-                .with_gas_price(self.provider.get_gas_price().await?);
-            futs.push(self.provider.send_transaction(tx).await?.get_receipt());
-        }
-
-        for (i, fut) in futs.into_iter().enumerate() {
-            let reciept = fut.await?;
-            debug!(
-                "sent {} eth to actor {}, tx hash - {}",
-                format_units(amount, "eth")?,
-                self.actors[i].address,
-                reciept.transaction_hash
-            );
-        }
-        debug!("actors topped up successfully!");
         Ok(())
+        // let master_balance = self.provider.get_balance(self.master_address).await?;
+        // // save 0.001 eth per actor for l1 gas fee in case of optimism
+        // let master_usable_balance = master_balance.saturating_sub(parse_ether("0.001")?);
+        // // we need to send funds to all actors while retaining equal part in master account
+        // let amount: U256 = master_usable_balance.div_ceil(U256::from(self.actors.len() + 1));
+        // info!(
+        //     "master balance: {} eth, usable balance: {}, sending {} eth to each actor from master",
+        //     format_units(master_balance, "eth")?,
+        //     format_units(master_usable_balance, "eth")?,
+        //     format_units(amount, "eth")?
+        // );
+
+        // // let mut futs = vec![];
+        // for actor in self.actors.iter() {
+        //     info!(
+        //         "sending {} eth to actor {}",
+        //         format_units(amount, "eth")?,
+        //         actor.address
+        //     );
+        //     let tx = TransactionRequest::default()
+        //         .from(self.master_address)
+        //         .to(actor.address)
+        //         .value(amount)
+        //         // some clients does not support `eth_feeHistory` so falling back to legacy gas price
+        //         .with_gas_price(self.provider.get_gas_price().await?);
+        //     let reciept = self
+        //         .provider
+        //         .send_transaction(tx)
+        //         .await?
+        //         .get_receipt()
+        //         .await?;
+        //     debug!(
+        //         "sent {} eth to actor {}, tx hash - {}",
+        //         format_units(amount, "eth")?,
+        //         actor.address,
+        //         reciept.transaction_hash
+        //     );
+        // }
+
+        // // for (i, fut) in futs.into_iter().enumerate() {
+        // //     let reciept = fut.await?;
+        // //     debug!(
+        // //         "sent {} eth to actor {}, tx hash - {}",
+        // //         format_units(amount, "eth")?,
+        // //         self.actors[i].address,
+        // //         reciept.transaction_hash
+        // //     );
+        // // }
+        // debug!("actors topped up successfully!");
+        // Ok(())
     }
 
     /// Spwan the actors tasks to start sending tx
@@ -477,7 +526,7 @@ impl ActorManager {
 
             let span = info_span!("actor_task", actor = actor.address.to_string());
             let fut = async move {
-                info!("spawned");
+                debug!("spawned");
                 'shutdown: loop {
                     // biased select to prioritize tx send over shutdown signal
                     // to prevent race conditions
@@ -492,7 +541,7 @@ impl ActorManager {
                             }
                         }
                         _ = cancel_token.cancelled() => {
-                            info!("shutdown signal recieved, cleaning up..");
+                            debug!("shutdown signal recieved, cleaning up..");
                             let _ = actor.cleanup_nonce(tx_timeout).await;
                             break 'shutdown;
                         }
@@ -510,32 +559,33 @@ impl ActorManager {
 
     /// Teardown the actors tasks and peform cleanup,
     /// send back all the funds to master account
-    pub async fn shutdown(&mut self, tx_timeout: Duration) {
+    pub async fn shutdown(&mut self, _tx_timeout: Duration) {
         // cancel all the tasks
         self.actor_cancel_token.cancel();
         // wait for tasks to shutdown
         while self.tasks.join_next().await.is_some() {}
         // attempt to send back all the funds to master account
-        self.attempt_to_send_funds_back(tx_timeout).await;
+        // self.attempt_to_send_funds_back(tx_timeout).await;
     }
 
     /// Attempt to send all the funds back to master account,
     /// errors are logged and ignored
-    pub async fn attempt_to_send_funds_back(&self, tx_timeout: Duration) {
-        let handles = self.actors.iter().map(|actor| {
-            let actor = actor.clone();
-            let master_address = self.master_address;
-            let span = info_span!("funds_back", actor = actor.address.to_string());
-            let fut = async move {
-                if let Ok(reciept) = actor.send_all_funds(master_address, tx_timeout).await {
-                    info!("success, tx hash - {}", reciept.transaction_hash);
-                }
-            };
+    pub async fn attempt_to_send_funds_back(&self, _tx_timeout: Duration) {
 
-            fut.instrument(span)
-        });
+        // let handles = self.actors.iter().map(|actor| {
+        //     let actor = actor.clone();
+        //     let master_address = self.master_address;
+        //     let span = info_span!("funds_back", actor = actor.address.to_string());
+        //     let fut = async move {
+        //         if let Ok(reciept) = actor.send_all_funds(master_address, tx_timeout).await {
+        //             info!("success, tx hash - {}", reciept.transaction_hash);
+        //         }
+        //     };
 
-        futures::future::join_all(handles).await;
+        //     fut.instrument(span)
+        // });
+
+        // futures::future::join_all(handles).await;
     }
 }
 
@@ -549,13 +599,17 @@ pub fn build_master_signer(phrase: &str) -> Result<LocalSigner<SigningKey>> {
 }
 
 /// Get the wallet with master (index 0) and actors signers along with their address from the phrase
-fn build_wallet(phrase: &str, num_actors: u32) -> Result<(EthereumWallet, Address, Vec<Address>)> {
+fn build_wallet(
+    phrase: &str,
+    num_actors: u32,
+    start: u32,
+) -> Result<(EthereumWallet, Address, Vec<Address>)> {
     let master = build_master_signer(phrase)?;
     let master_address = master.address();
     let mut actor_address = vec![];
     let mut signer = EthereumWallet::new(master);
 
-    for i in 1..(num_actors + 1) {
+    for i in start..(num_actors + start) {
         let wallet = MnemonicBuilder::<English>::default()
             .phrase(phrase)
             .index(i)?

@@ -124,7 +124,7 @@ impl<P: Provider + 'static> RateController<P> {
                             nonce_handle
                                 .failed(TxFailContext {
                                     gas_price,
-                                    error,
+                                    error: error.into(),
                                     might_be_timeout: true,
                                 })
                                 .free()
@@ -139,7 +139,7 @@ impl<P: Provider + 'static> RateController<P> {
                         .failed(TxFailContext {
                             gas_price,
                             might_be_timeout: false,
-                            error,
+                            error: error.into(),
                         })
                         .free()
                         .await;
