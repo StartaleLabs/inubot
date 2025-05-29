@@ -1,5 +1,5 @@
 [workspace]
-members = ["inu"]
+members = ["inu", "build_genesis"]
 resolver = "2"
 
 [workspace.package]

@@ -1,5 +1,3 @@
-use std::time::Duration;
-
 use alloy::{
     providers::{Provider, ProviderBuilder},
     rpc::{
@@ -45,9 +43,12 @@ pub struct ChainStats {
     block_gas_limit: u128,
     expected_block_time: u64,
     last_block: Option<Block>,
+    first_block: Option<Block>,
     block_time: Option<u64>,
     avg_block_time: WelfordMovingAverage,
     avg_tps: WelfordMovingAverage,
+    tx_per_block: Vec<u128>,
+    mgas_per_block: Vec<f64>,
     avg_gas_used: WelfordMovingAverage,
 }
 
@@ -62,6 +63,10 @@ impl ChainStats {
     /// Update the statistics with the new block
     /// This require full blocks, some RPCs may not return transactions
     pub fn update(&mut self, block: &Block) {
+        if self.first_block.is_none() {
+            self.first_block = Some(block.clone());
+        }
+
         let span = match &self.last_block {
             Some(last_block) => block.header.timestamp - last_block.header.timestamp,
             None => self.expected_block_time,
@@ -74,6 +79,10 @@ impl ChainStats {
         self.last_block = Some(block.clone());
         self.block_time = Some(span);
         self.block_gas_limit = block.header.gas_limit;
+
+        self.tx_per_block.push(block.transactions.len() as u128);
+        self.mgas_per_block
+            .push(block.header.gas_used as f64 / 1_000_000f64);
     }
 
     pub fn average_tps(&self) -> f64 {
@@ -85,10 +94,14 @@ impl ChainStats {
     }
 
     pub fn average_block_time(&self) -> f64 {
-        if self.last_block.is_some() {
-            self.avg_block_time.mean()
-        } else {
-            self.expected_block_time as f64
+        match (&self.last_block, &self.first_block) {
+            (Some(last_block), Some(first_block)) => {
+                let duration = last_block.header.timestamp - first_block.header.timestamp;
+                let blocks =
+                    last_block.header.number.unwrap_or(0) - first_block.header.number.unwrap_or(0);
+                blocks as f64 / duration as f64
+            }
+            _ => self.expected_block_time as f64,
         }
     }
 
@@ -138,6 +151,15 @@ impl ChainStats {
             .as_ref()
             .map(|block| {
                 let block_number = block.header.number.unwrap_or_default();
+
+                let avg_tx = self.tx_per_block.iter().sum::<u128>() as f64 / self.tx_per_block.len() as f64;
+
+                let avg_mgas = self
+                    .mgas_per_block
+                    .iter()
+                    .sum::<f64>()
+                    / self.mgas_per_block.len() as f64;
+
                 let block_print = if block_number % 2_000 == 0 {
                     format!("Epoch #{}", block.header.number.unwrap_or_default()).bold().on_bright_red()
                 } else {
@@ -150,19 +172,20 @@ impl ChainStats {
                     "\t".normal()
                 };
 
+                let age_secs = humantime::format_duration(std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH + std::time::Duration::from_secs(block.header.timestamp))
+                    .unwrap_or_default());
+
                 format!(
-                    "[{}, {}] {:.2} Tx, {:.2} MGas {} \tAvg({:.2}s Block Time, {:.2} Tx, {:.2} MGas)",
+                    "[{}, {}s ago] {:.2} Tx, {:.2} MGas {} \tAvg({:.2}s Block Time, {:.2} Tx, {:.2} MGas)",
                     block_print,
-                    humantime::format_duration(Duration::from_secs(
-                        self.block_time.unwrap_or(self.expected_block_time)
-                    ))
-                    .to_string().italic(),
+                    age_secs.to_string().italic(),
                     self.block_tx(),
                     self.block_mgas(),
                     format!("{}", is_close_to_full),
                     self.average_block_time(),
-                    self.average_tps(),
-                    self.average_block_mgas(),
+                    avg_tx,
+                    avg_mgas,
                 )
             })
             .unwrap_or("No data".to_string())

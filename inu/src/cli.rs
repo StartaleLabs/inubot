@@ -212,7 +212,7 @@ struct GlobalArgs {
     #[serde(skip_serializing_if = "Option::is_none", with = "humantime_serde")]
     #[arg(long, global = true, value_parser = humantime::parse_duration)]
     tx_timeout: Option<Duration>,
-    
+
     /// Per actor TPS (default: 50)
     #[serde(skip_serializing_if = "Option::is_none")]
     #[arg(long, global = true)]

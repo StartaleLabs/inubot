@@ -1,11 +1,11 @@
-use ethers_signers::{coins_bip39::English, MnemonicBuilder};
 use ethers_signers::Signer;
+use ethers_signers::{coins_bip39::English, MnemonicBuilder};
 use rayon::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::{collections::BTreeMap, fs};
 
 const NUM_ACCOUNTS: usize = 200_000;
-const BALANCE: &str = "0x028f5c28f5c28f5c28f5c28f5c28f5c28f5c28f5c28f5c28f5c28f5c28f5c28f";          // 1 000 000 ETH
+const BALANCE: &str = "0x028f5c28f5c28f5c28f5c28f5c28f5c28f5c28f5c28f5c28f5c28f5c28f5c28f"; // 1 000 000 ETH
 const MNEMONIC: &str = "test test test test test test test test test test test junk";
 
 #[derive(Serialize, Deserialize)]
@@ -36,10 +36,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .map(|i| {
             let wallet = MnemonicBuilder::<English>::default()
                 .phrase(MNEMONIC)
-                .index(i as u32)               // m/44'/60'/0'/0/{i}
-                .expect("bad index")            // <-- unwrap the Result
+                .index(i as u32) // m/44'/60'/0'/0/{i}
+                .expect("bad index") // <-- unwrap the Result
                 .build()
-                .expect("builder failed");      // <-- unwrap the Result
+                .expect("builder failed"); // <-- unwrap the Result
 
             (
                 format!("{:#x}", wallet.address()),
@@ -54,7 +54,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         nonce: "0x0".into(),
         timestamp: "0x6490fdd2".into(),
         extraData: "0x".into(),
-        gasLimit: "0x11e1a300".into(),
+        gasLimit: "0x11861580".into(),
         difficulty: "0x0".into(),
         mixHash: "0x0000000000000000000000000000000000000000000000000000000000000000".into(),
         coinbase: "0x0000000000000000000000000000000000000000".into(),

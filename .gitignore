@@ -5,3 +5,4 @@ Cargo.lock
 .env
 inu_config.toml
 logs
+build_genesis/genesis.json

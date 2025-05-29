@@ -1,10 +1,7 @@
 use alloy::{
     eips::eip2718::Encodable2718,
     network::{Ethereum, EthereumWallet, NetworkWallet, TransactionBuilder},
-    primitives::{
-        utils::{parse_ether},
-        Address, U256,
-    },
+    primitives::{utils::parse_ether, Address, U256},
     providers::{
         fillers::{ChainIdFiller, FillProvider, GasFiller, JoinFill, NonceFiller, WalletFiller},
         Provider, RootProvider,
@@ -25,7 +22,7 @@ use std::time::Duration;
 use thiserror::Error;
 use tokio::{sync, task::JoinSet, time};
 use tokio_util::sync::CancellationToken;
-use tracing::{debug, error, info, info_span, instrument, Instrument, Level};
+use tracing::{debug, error, info_span, instrument, Instrument, Level};
 
 use crate::{
     actor::{
@@ -35,7 +32,7 @@ use crate::{
     builder::TransactionRandomizer,
     cli::GlobalOptions,
     gas_oracle::GasPriceChannel,
-    rate::{RateControllerHandle},
+    rate::RateControllerHandle,
 };
 
 pub mod error;
@@ -406,7 +403,7 @@ impl ActorManager {
         let provider = Arc::new(provider.join_with(WalletFiller::new(signer.clone())));
         let signer: Arc<EthereumWallet> = Arc::new(signer);
 
-        info!(
+        debug!(
             "master address: {}, actors: {:?}",
             master_address, actor_addresses
         );

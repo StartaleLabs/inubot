@@ -241,7 +241,9 @@ async fn setup_manager(
     phrase: &str,
 ) -> Result<ActorManager> {
     let provider_shared = Arc::new(provider.clone());
-    provider_shared.client().set_poll_interval(Duration::from_secs(1));
+    provider_shared
+        .client()
+        .set_poll_interval(Duration::from_secs(1));
     // init the gas poller and spwan it
     let gas_oracle = GasPricePoller::new(provider_shared.weak_client())
         .with_init_value(0)
