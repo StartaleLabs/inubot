@@ -172,9 +172,9 @@ impl ChainStats {
                     "\t".normal()
                 };
 
-                let age_secs = humantime::format_duration(std::time::SystemTime::now()
+                let age_secs = std::time::SystemTime::now()
                     .duration_since(std::time::UNIX_EPOCH + std::time::Duration::from_secs(block.header.timestamp))
-                    .unwrap_or_default());
+                    .unwrap_or_default().as_secs();
 
                 format!(
                     "[{}, {}s ago] {:.2} Tx, {:.2} MGas {} \tAvg({:.2}s Block Time, {:.2} Tx, {:.2} MGas)",
