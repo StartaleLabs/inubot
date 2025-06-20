@@ -10,7 +10,7 @@ Produce fixed TPS stress for a EVM RPC compatible chain.
 ## Install
 
 ```
-cargo install --git https://github.com/AstarNetwork/inubot --branch main
+cargo install --git https://github.com/StartaleLabs/inubot --branch main
 ```
 
 or directly clone the repo and build it.
